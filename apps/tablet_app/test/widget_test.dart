@@ -32,4 +32,20 @@ void main() {
 
     expect(find.text('이서연 출석 요청을 보냈습니다.'), findsOneWidget);
   });
+
+  testWidgets('signs out from design mode session', (tester) async {
+    app.main();
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('이메일로 시작'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('출석'), findsWidgets);
+
+    await tester.tap(find.byTooltip('로그아웃'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Ochul'), findsOneWidget);
+    expect(find.text('이메일로 시작'), findsOneWidget);
+  });
 }

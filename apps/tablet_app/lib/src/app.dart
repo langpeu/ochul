@@ -77,6 +77,19 @@ class _AppShellState extends State<AppShell> {
     super.dispose();
   }
 
+  Future<void> _signOut() async {
+    if (widget.config.isSupabaseConfigured) {
+      await _authService?.signOut();
+    }
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _selectedIndex = 0;
+      _isSignedIn = false;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     if (!_isSignedIn) {
@@ -117,6 +130,19 @@ class _AppShellState extends State<AppShell> {
               setState(() => _selectedIndex = index);
             },
             labelType: NavigationRailLabelType.all,
+            trailing: Expanded(
+              child: Align(
+                alignment: Alignment.bottomCenter,
+                child: Padding(
+                  padding: const EdgeInsets.only(bottom: 16),
+                  child: IconButton(
+                    tooltip: '로그아웃',
+                    onPressed: _signOut,
+                    icon: const Icon(Icons.logout),
+                  ),
+                ),
+              ),
+            ),
             destinations: [
               for (final destination in destinations)
                 NavigationRailDestination(
