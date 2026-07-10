@@ -15,6 +15,11 @@ class StudentManagementService {
     ];
   }
 
+  Future<ManagedStudent> fetchStudent(String studentId) async {
+    final data = await edgeClient.call('/students/$studentId');
+    return _readStudent(data, '학생 상세 응답이 올바르지 않습니다.');
+  }
+
   Future<ManagedStudent> createStudent({
     required String studyRoomId,
     required String name,

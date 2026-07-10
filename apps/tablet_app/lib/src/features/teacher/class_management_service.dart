@@ -15,6 +15,11 @@ class ClassManagementService {
     ];
   }
 
+  Future<ManagedClass> fetchClass(String classId) async {
+    final data = await edgeClient.call('/classes/$classId');
+    return _readClass(data, '수업 상세 응답이 올바르지 않습니다.');
+  }
+
   Future<ManagedClass> createClass({
     required String studyRoomId,
     required String name,
@@ -72,11 +77,7 @@ class ClassManagementService {
         'endsAt': endsAt,
       },
     );
-    final classJson = data['class'];
-    if (classJson is Map<String, dynamic>) {
-      return ManagedClass.fromJson(classJson);
-    }
-    throw const ClassManagementException('수업 수정 응답이 올바르지 않습니다.');
+    return _readClass(data, '수업 수정 응답이 올바르지 않습니다.');
   }
 
   Future<void> deleteClass(String classId) async {
@@ -152,6 +153,14 @@ class ClassManagementService {
       return notifications['requested'] as int? ?? 0;
     }
     return 0;
+  }
+
+  ManagedClass _readClass(Map<String, dynamic> data, String message) {
+    final classJson = data['class'];
+    if (classJson is Map<String, dynamic>) {
+      return ManagedClass.fromJson(classJson);
+    }
+    throw ClassManagementException(message);
   }
 }
 

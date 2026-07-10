@@ -184,6 +184,9 @@ async function routeEdgeRequest(
 
   const studentMatch = path.match(/^\/students\/([^/]+)$/);
   if (studentMatch) {
+    if (method === "GET") {
+      return await getStudent(studentMatch[1], context);
+    }
     if (method === "PATCH") {
       return await updateStudent(studentMatch[1], body, context);
     }
@@ -225,6 +228,9 @@ async function routeEdgeRequest(
 
   const classMatch = path.match(/^\/classes\/([^/]+)$/);
   if (classMatch) {
+    if (method === "GET") {
+      return await getClass(classMatch[1], context);
+    }
     if (method === "PATCH") {
       return await updateClass(classMatch[1], body, context);
     }
@@ -792,6 +798,21 @@ async function listClasses(
     ok: true,
     classes: (classes ?? []).map(formatClassSummary),
   };
+}
+
+async function getClass(
+  classId: string,
+  { db, teacher }: AppContext,
+): Promise<Record<string, unknown>> {
+  const activeTeacher = requireTeacherProfile(teacher);
+  assertUuid(classId, "수업 정보가 올바르지 않습니다.");
+  const classRoom = await readAccessibleClassDetail(
+    db,
+    classId,
+    activeTeacher,
+    { allowAdmin: true },
+  );
+  return { ok: true, class: formatClassSummary(classRoom) };
 }
 
 async function createClass(
@@ -2165,6 +2186,30 @@ async function listStudents(
       avatarKey: student.avatar_key,
     })),
   };
+}
+
+async function getStudent(
+  studentId: string,
+  { db, teacher }: AppContext,
+): Promise<Record<string, unknown>> {
+  const activeTeacher = requireTeacherProfile(teacher);
+  assertUuid(studentId, "학생 정보가 올바르지 않습니다.");
+
+  const { data: student, error } = await db
+    .from("students")
+    .select(
+      "id, study_room_id, student_code, name, status, gender, age_group, avatar_key",
+    )
+    .eq("id", studentId)
+    .maybeSingle();
+
+  if (error) throw new EdgeApiError(500, "학생 조회에 실패했습니다.");
+  if (!student) throw new EdgeApiError(404, "학생을 찾을 수 없습니다.");
+  await assertStudyRoomAccess(db, activeTeacher, student.study_room_id, {
+    allowAdmin: true,
+  });
+
+  return { ok: true, student: formatManagedStudent(student) };
 }
 
 async function listAuditLogs(
@@ -3600,6 +3645,26 @@ async function readAccessibleClass(
   const { data, error } = await db
     .from("classes")
     .select("id, organization_id, study_room_id, name, class_kind")
+    .eq("id", classId)
+    .maybeSingle();
+
+  if (error) throw new EdgeApiError(500, "수업 조회에 실패했습니다.");
+  if (!data) throw new EdgeApiError(404, "수업을 찾을 수 없습니다.");
+  await assertStudyRoomAccess(db, teacher, data.study_room_id, options);
+  return data;
+}
+
+async function readAccessibleClassDetail(
+  db: SupabaseClient,
+  classId: string,
+  teacher: TeacherContext,
+  options: { allowAdmin: boolean },
+) {
+  const { data, error } = await db
+    .from("classes")
+    .select(
+      "id, organization_id, study_room_id, name, description, class_kind, start_date, end_date, schedule_text, active, class_schedules(day_of_week, starts_at, ends_at, active)",
+    )
     .eq("id", classId)
     .maybeSingle();
 
