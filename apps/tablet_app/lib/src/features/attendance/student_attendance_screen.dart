@@ -228,30 +228,56 @@ class _LiveStudentTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final canCheckIn = student.status == 'waiting';
     return Card(
       child: InkWell(
         borderRadius: BorderRadius.circular(8),
-        onTap: () => showDialog<void>(
-          context: context,
-          builder: (context) => _LivePinDialog(
-            classSessionId: classSessionId,
-            student: student,
-            attendanceService: attendanceService,
-            onCheckedIn: onCheckedIn,
-          ),
-        ),
+        onTap: canCheckIn
+            ? () => showDialog<void>(
+                context: context,
+                builder: (context) => _LivePinDialog(
+                  classSessionId: classSessionId,
+                  student: student,
+                  attendanceService: attendanceService,
+                  onCheckedIn: onCheckedIn,
+                ),
+              )
+            : null,
         child: Padding(
           padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              Text(
-                student.name,
-                style: Theme.of(
-                  context,
-                ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
+              StudentAvatar(
+                name: student.name,
+                avatarKey: student.avatarKey,
+                radius: 24,
               ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(
+                      student.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      student.code,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 12),
               _LiveStatusPill(status: student.status),
             ],
           ),
