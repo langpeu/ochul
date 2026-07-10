@@ -70,7 +70,7 @@ class _AppShellState extends State<AppShell> {
         label: '선생님',
         icon: Icons.dashboard_outlined,
         selectedIcon: Icons.dashboard,
-        child: const TeacherDashboard(),
+        child: TeacherDashboard(config: widget.config),
       ),
       _Destination(
         label: '관리자',

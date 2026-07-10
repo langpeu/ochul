@@ -34,8 +34,23 @@ class EdgeFunctionClient {
     );
     final data = response.data;
     if (data is Map<String, dynamic>) {
+      final error = data['error'];
+      if (error is Map<String, dynamic>) {
+        throw EdgeFunctionException(
+          error['message'] as String? ?? 'API 요청에 실패했습니다.',
+        );
+      }
       return data;
     }
     return <String, dynamic>{'data': data};
   }
+}
+
+class EdgeFunctionException implements Exception {
+  const EdgeFunctionException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
 }

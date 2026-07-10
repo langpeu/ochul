@@ -1,10 +1,15 @@
 import 'package:flutter/material.dart';
 
+import '../../core/app_config.dart';
+import '../../core/edge_function_client.dart';
 import '../../core/teacher_gate.dart';
 import '../../models/sample_data.dart';
+import 'teacher_home_service.dart';
 
 class TeacherDashboard extends StatefulWidget {
-  const TeacherDashboard({super.key});
+  const TeacherDashboard({super.key, required this.config});
+
+  final AppConfig config;
 
   @override
   State<TeacherDashboard> createState() => _TeacherDashboardState();
@@ -13,6 +18,9 @@ class TeacherDashboard extends StatefulWidget {
 class _TeacherDashboardState extends State<TeacherDashboard> {
   var _unlocked = false;
   final _gate = TeacherGate();
+  final _homeService = const TeacherHomeService(
+    edgeClient: EdgeFunctionClient(),
+  );
 
   Future<void> _unlock() async {
     final ok = await _gate.authenticate();
@@ -46,6 +54,8 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
         children: [
           Text('선생님 보드', style: Theme.of(context).textTheme.headlineMedium),
           const SizedBox(height: 16),
+          _TeacherHomeHeader(config: widget.config, service: _homeService),
+          const SizedBox(height: 16),
           Expanded(
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -59,6 +69,141 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _TeacherHomeHeader extends StatelessWidget {
+  const _TeacherHomeHeader({required this.config, required this.service});
+
+  final AppConfig config;
+  final TeacherHomeService service;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!config.isSupabaseConfigured) {
+      return const _StudyRoomSummaryBar(
+        teacherName: '홍선생',
+        role: 'teacher',
+        studyRooms: [
+          StudyRoomSummary(
+            id: 'sample-room-1',
+            name: '홍선생 공부방',
+            description: '화면 설계 모드 샘플',
+          ),
+        ],
+        designMode: true,
+      );
+    }
+
+    return FutureBuilder<TeacherHome>(
+      future: service.fetchMe(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState != ConnectionState.done) {
+          return const LinearProgressIndicator();
+        }
+        if (snapshot.hasError) {
+          return _TeacherHomeError(message: snapshot.error.toString());
+        }
+        final home = snapshot.requireData;
+        return _StudyRoomSummaryBar(
+          teacherName: home.teacher.name,
+          role: home.teacher.role,
+          studyRooms: home.studyRooms,
+          designMode: false,
+        );
+      },
+    );
+  }
+}
+
+class _StudyRoomSummaryBar extends StatelessWidget {
+  const _StudyRoomSummaryBar({
+    required this.teacherName,
+    required this.role,
+    required this.studyRooms,
+    required this.designMode,
+  });
+
+  final String teacherName;
+  final String role;
+  final List<StudyRoomSummary> studyRooms;
+  final bool designMode;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Row(
+          children: [
+            const Icon(Icons.account_circle_outlined),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    teacherName,
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '${role == 'admin' ? '관리자' : '선생님'} · 공부방 ${studyRooms.length}개',
+                  ),
+                ],
+              ),
+            ),
+            if (designMode)
+              const Chip(
+                avatar: Icon(Icons.visibility_outlined, size: 18),
+                label: Text('설계 모드'),
+              ),
+            const SizedBox(width: 12),
+            Flexible(
+              child: Wrap(
+                alignment: WrapAlignment.end,
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (final studyRoom in studyRooms)
+                    Chip(
+                      avatar: const Icon(Icons.meeting_room_outlined, size: 18),
+                      label: Text(studyRoom.name),
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _TeacherHomeError extends StatelessWidget {
+  const _TeacherHomeError({required this.message});
+
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Row(
+          children: [
+            Icon(
+              Icons.error_outline,
+              color: Theme.of(context).colorScheme.error,
+            ),
+            const SizedBox(width: 12),
+            Expanded(child: Text('선생님 정보를 불러오지 못했습니다. $message')),
+          ],
+        ),
       ),
     );
   }

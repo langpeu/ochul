@@ -69,6 +69,10 @@ async function routeEdgeRequest(
   const path = normalizePath(payload.path);
   const body = payload.body ?? {};
 
+  if (method === "GET" && path === "/me") {
+    return await readMe(context);
+  }
+
   const checkInMatch = path.match(
     /^\/class-sessions\/([^/]+)\/check-in$/,
   );
@@ -77,6 +81,45 @@ async function routeEdgeRequest(
   }
 
   throw new EdgeApiError(404, "지원하지 않는 API 경로입니다.");
+}
+
+async function readMe(
+  { db, teacher }: AppContext,
+): Promise<Record<string, unknown>> {
+  const { data: teacherProfile, error: teacherError } = await db
+    .from("teachers")
+    .select("id, name, email, role")
+    .eq("id", teacher.id)
+    .single();
+
+  if (teacherError) {
+    throw new EdgeApiError(500, "선생님 프로필 조회에 실패했습니다.");
+  }
+
+  const { data: studyRooms, error: studyRoomsError } = await db
+    .from("study_rooms")
+    .select("id, name, description, created_at")
+    .eq("owner_teacher_id", teacher.id)
+    .order("created_at", { ascending: true });
+
+  if (studyRoomsError) {
+    throw new EdgeApiError(500, "공부방 목록 조회에 실패했습니다.");
+  }
+
+  return {
+    ok: true,
+    teacher: {
+      id: teacherProfile.id,
+      name: teacherProfile.name,
+      email: teacherProfile.email,
+      role: teacherProfile.role,
+    },
+    studyRooms: (studyRooms ?? []).map((studyRoom) => ({
+      id: studyRoom.id,
+      name: studyRoom.name,
+      description: studyRoom.description,
+    })),
+  };
 }
 
 async function checkInStudent(
