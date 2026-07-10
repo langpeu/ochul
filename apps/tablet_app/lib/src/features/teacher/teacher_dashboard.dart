@@ -2965,18 +2965,24 @@ class _ClassroomLayoutPanelState extends State<_ClassroomLayoutPanel> {
     await _saveLayout(layout.copyWith(seats: [...layout.seats, nextSeat]));
   }
 
-  Future<void> _createDefaultSeats(_ClassroomLayoutData data) async {
+  Future<void> _createGridSeats(_ClassroomLayoutData data) async {
     final layout = data.layout;
     if (layout == null) return;
+    final result = await showDialog<_SeatGridResult>(
+      context: context,
+      builder: (context) => const _SeatGridDialog(),
+    );
+    if (result == null) return;
+
     final seats = [
-      for (var index = 0; index < 6; index++)
+      for (var index = 0; index < result.count; index++)
         ClassroomSeat(
           id: null,
           label: '${index + 1}',
-          deskX: 0.18 + (index % 3) * 0.28,
-          deskY: 0.18 + (index ~/ 3) * 0.26,
-          seatX: 0.18 + (index % 3) * 0.28,
-          seatY: 0.29 + (index ~/ 3) * 0.26,
+          deskX: result.xFor(index),
+          deskY: result.deskYFor(index),
+          seatX: result.xFor(index),
+          seatY: result.seatYFor(index),
           rotationDegrees: 0,
           displayOrder: index,
         ),
@@ -3171,9 +3177,9 @@ class _ClassroomLayoutPanelState extends State<_ClassroomLayoutPanel> {
                           OutlinedButton.icon(
                             onPressed: _saving || layout.seats.isNotEmpty
                                 ? null
-                                : () => _createDefaultSeats(data),
+                                : () => _createGridSeats(data),
                             icon: const Icon(Icons.grid_view_outlined),
-                            label: const Text('기본 6석'),
+                            label: const Text('행/열 자동'),
                           ),
                           OutlinedButton.icon(
                             onPressed: _saving || data.classes.length < 2
@@ -3341,6 +3347,125 @@ class _ClassroomLayoutData {
   final List<ManagedClass> classes;
   final List<ManagedStudent> enrolled;
   final ClassroomLayout? layout;
+}
+
+class _SeatGridResult {
+  const _SeatGridResult({required this.rows, required this.columns});
+
+  final int rows;
+  final int columns;
+
+  int get count => rows * columns;
+
+  double xFor(int index) {
+    if (columns == 1) return 0.5;
+    final column = index % columns;
+    return 0.12 + column * (0.76 / (columns - 1));
+  }
+
+  double deskYFor(int index) {
+    if (rows == 1) return 0.42;
+    final row = index ~/ columns;
+    return 0.12 + row * (0.62 / (rows - 1));
+  }
+
+  double seatYFor(int index) {
+    return (deskYFor(index) + 0.09).clamp(0.08, 0.92).toDouble();
+  }
+}
+
+class _SeatGridDialog extends StatefulWidget {
+  const _SeatGridDialog();
+
+  @override
+  State<_SeatGridDialog> createState() => _SeatGridDialogState();
+}
+
+class _SeatGridDialogState extends State<_SeatGridDialog> {
+  final _rowsController = TextEditingController(text: '2');
+  final _columnsController = TextEditingController(text: '3');
+  String? _errorText;
+
+  @override
+  void dispose() {
+    _rowsController.dispose();
+    _columnsController.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final rows = int.tryParse(_rowsController.text.trim());
+    final columns = int.tryParse(_columnsController.text.trim());
+    if (rows == null ||
+        columns == null ||
+        rows < 1 ||
+        rows > 8 ||
+        columns < 1 ||
+        columns > 8) {
+      setState(() => _errorText = '행과 열은 각각 1~8 사이 숫자로 입력해 주세요.');
+      return;
+    }
+    Navigator.of(context).pop(_SeatGridResult(rows: rows, columns: columns));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('행/열 자동 배치'),
+      content: SizedBox(
+        width: 320,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _rowsController,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: '행',
+                      border: OutlineInputBorder(),
+                    ),
+                    onSubmitted: (_) => _submit(),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: TextField(
+                    controller: _columnsController,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: '열',
+                      border: OutlineInputBorder(),
+                    ),
+                    onSubmitted: (_) => _submit(),
+                  ),
+                ),
+              ],
+            ),
+            if (_errorText != null) ...[
+              const SizedBox(height: 12),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  _errorText!,
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('취소'),
+        ),
+        FilledButton(onPressed: _submit, child: const Text('생성')),
+      ],
+    );
+  }
 }
 
 class _CopyLayoutDialog extends StatelessWidget {
