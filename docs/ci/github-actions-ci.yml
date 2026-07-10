@@ -11,12 +11,9 @@ on:
       - develop
 
 jobs:
-  flutter:
-    name: Flutter app
+  validate:
+    name: Validate
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: apps/tablet_app
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -28,42 +25,10 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Install dependencies
-        run: flutter pub get
-
-      - name: Check formatting
-        run: dart format --set-exit-if-changed lib test
-
-      - name: Analyze
-        run: flutter analyze
-
-      - name: Test
-        run: flutter test
-
-  edge-api:
-    name: Edge API
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
       - name: Set up Deno
         uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
-
-      - name: Check formatting
-        run: deno fmt --check supabase/functions/edge-api/index.ts
-
-      - name: Type check
-        run: deno check supabase/functions/edge-api/index.ts
-
-  security:
-    name: Public repo guardrails
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
 
       - name: Install ripgrep
         run: |
@@ -72,31 +37,5 @@ jobs:
             sudo apt-get install -y ripgrep
           fi
 
-      - name: Ensure local secret files stay ignored
-        run: |
-          git check-ignore -v apps/tablet_app/Secrets.dev.config
-          git check-ignore -v apps/tablet_app/Secrets.prod.config
-          git check-ignore -v supabase/functions/.env
-
-      - name: Block direct Supabase DB calls from Flutter
-        run: |
-          if rg -n "\.from\(|\.rpc\(|Postgrest|select\(|insert\(|update\(" apps/tablet_app/lib apps/tablet_app/test; then
-            echo "Flutter code must call Edge Functions, not Supabase tables/RPC directly."
-            exit 1
-          fi
-
-      - name: Scan for committed secret-like values
-        run: |
-          if rg -n --hidden --glob '!.git/**' --glob '!.github/workflows/ci.yml' --glob '!docs/ci/github-actions-ci.yml' --glob '!apps/tablet_app/Secrets.dev.config' --glob '!apps/tablet_app/Secrets.prod.config' "(eyJ[A-Za-z0-9_-]{20,}|s[k]-[A-Za-z0-9]|BEGIN [A-Z ]+PRIVATE KEY|PRIVATE KEY-----)" .; then
-            echo "Secret-like value found in tracked files."
-            exit 1
-          fi
-
-      - name: Check no access metadata is stored
-        run: |
-          matches="$(rg -n --glob '!docs/ci/github-actions-ci.yml' "\bip\b|device|user_agent|user agent|기기 식별자" supabase/migrations supabase/functions docs apps/tablet_app/lib || true)"
-          echo "$matches"
-          if echo "$matches" | rg -v "저장하지 않는다|저장 코드 없음|같은 불필요한 접속 정보는 저장하지 않는다|감사 로그에는 IP"; then
-            echo "Unexpected IP/device/user-agent storage reference found."
-            exit 1
-          fi
+      - name: Validate repository
+        run: scripts/validate.sh

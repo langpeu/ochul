@@ -13,7 +13,8 @@ To activate it after granting the correct GitHub permission, move it to:
 
 The workflow checks:
 
+- `scripts/validate.sh`
 - Flutter formatting, analysis, and tests
 - Supabase Edge Function formatting and Deno type checks
-- Public repository guardrails for local secrets, direct Flutter DB calls, and
-  secret-like values
+- Public repository guardrails for local secrets, direct Flutter DB calls,
+  secret-like values, and access metadata storage
