@@ -74,15 +74,43 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
   }
 }
 
-class _TeacherHomeHeader extends StatelessWidget {
+class _TeacherHomeHeader extends StatefulWidget {
   const _TeacherHomeHeader({required this.config, required this.service});
 
   final AppConfig config;
   final TeacherHomeService service;
 
   @override
+  State<_TeacherHomeHeader> createState() => _TeacherHomeHeaderState();
+}
+
+class _TeacherHomeHeaderState extends State<_TeacherHomeHeader> {
+  late Future<TeacherHome>? _homeFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _homeFuture = widget.config.isSupabaseConfigured
+        ? widget.service.fetchMe()
+        : null;
+  }
+
+  Future<void> _onboard({
+    required String teacherName,
+    required String studyRoomName,
+  }) async {
+    final home = await widget.service.onboard(
+      teacherName: teacherName,
+      studyRoomName: studyRoomName,
+    );
+    if (mounted) {
+      setState(() => _homeFuture = Future.value(home));
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    if (!config.isSupabaseConfigured) {
+    if (!widget.config.isSupabaseConfigured) {
       return const _StudyRoomSummaryBar(
         teacherName: '홍선생',
         role: 'teacher',
@@ -98,7 +126,7 @@ class _TeacherHomeHeader extends StatelessWidget {
     }
 
     return FutureBuilder<TeacherHome>(
-      future: service.fetchMe(),
+      future: _homeFuture,
       builder: (context, snapshot) {
         if (snapshot.connectionState != ConnectionState.done) {
           return const LinearProgressIndicator();
@@ -107,13 +135,129 @@ class _TeacherHomeHeader extends StatelessWidget {
           return _TeacherHomeError(message: snapshot.error.toString());
         }
         final home = snapshot.requireData;
+        if (home.needsOnboarding) {
+          return _TeacherOnboardingCard(onSubmit: _onboard);
+        }
+        final teacher = home.teacher;
+        if (teacher == null) {
+          return const _TeacherHomeError(message: '선생님 프로필이 필요합니다.');
+        }
         return _StudyRoomSummaryBar(
-          teacherName: home.teacher.name,
-          role: home.teacher.role,
+          teacherName: teacher.name,
+          role: teacher.role,
           studyRooms: home.studyRooms,
           designMode: false,
         );
       },
+    );
+  }
+}
+
+class _TeacherOnboardingCard extends StatefulWidget {
+  const _TeacherOnboardingCard({required this.onSubmit});
+
+  final Future<void> Function({
+    required String teacherName,
+    required String studyRoomName,
+  })
+  onSubmit;
+
+  @override
+  State<_TeacherOnboardingCard> createState() => _TeacherOnboardingCardState();
+}
+
+class _TeacherOnboardingCardState extends State<_TeacherOnboardingCard> {
+  final _teacherNameController = TextEditingController();
+  final _studyRoomNameController = TextEditingController();
+  String? _errorText;
+  var _submitting = false;
+
+  @override
+  void dispose() {
+    _teacherNameController.dispose();
+    _studyRoomNameController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    final teacherName = _teacherNameController.text.trim();
+    final studyRoomName = _studyRoomNameController.text.trim();
+    if (teacherName.length < 2 || studyRoomName.length < 2) {
+      setState(() => _errorText = '선생님 이름과 공부방 이름을 2자 이상 입력해 주세요.');
+      return;
+    }
+
+    setState(() {
+      _errorText = null;
+      _submitting = true;
+    });
+    try {
+      await widget.onSubmit(
+        teacherName: teacherName,
+        studyRoomName: studyRoomName,
+      );
+    } catch (_) {
+      if (mounted) {
+        setState(() => _errorText = '공부방 생성에 실패했습니다.');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _submitting = false);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Row(
+          children: [
+            const Icon(Icons.add_business_outlined),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Wrap(
+                spacing: 12,
+                runSpacing: 12,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  SizedBox(
+                    width: 180,
+                    child: TextField(
+                      controller: _teacherNameController,
+                      enabled: !_submitting,
+                      decoration: const InputDecoration(
+                        labelText: '선생님 이름',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 220,
+                    child: TextField(
+                      controller: _studyRoomNameController,
+                      enabled: !_submitting,
+                      decoration: InputDecoration(
+                        labelText: '공부방 이름',
+                        errorText: _errorText,
+                        border: const OutlineInputBorder(),
+                      ),
+                      onSubmitted: (_) => _submitting ? null : _submit(),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 12),
+            FilledButton.icon(
+              onPressed: _submitting ? null : _submit,
+              icon: const Icon(Icons.check),
+              label: Text(_submitting ? '생성 중' : '공부방 생성'),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

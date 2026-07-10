@@ -48,6 +48,7 @@ Edge API 경로는 REST 스타일로 간결하고 명확하게 둔다.
 ### auth/profile
 
 - `GET /me`: 내 선생님 프로필, 권한, 공부방 목록
+- `POST /me/onboard`: 첫 로그인 선생님 프로필과 기본 공부방 생성
 
 ### study-rooms
 

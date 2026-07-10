@@ -9,20 +9,38 @@ class TeacherHomeService {
     final data = await edgeClient.call('/me');
     return TeacherHome.fromJson(data);
   }
+
+  Future<TeacherHome> onboard({
+    required String teacherName,
+    required String studyRoomName,
+  }) async {
+    final data = await edgeClient.call(
+      '/me/onboard',
+      method: EdgeHttpMethod.post,
+      body: <String, dynamic>{
+        'teacherName': teacherName,
+        'studyRoomName': studyRoomName,
+      },
+    );
+    return TeacherHome.fromJson(data);
+  }
 }
 
 class TeacherHome {
-  const TeacherHome({required this.teacher, required this.studyRooms});
+  const TeacherHome({
+    required this.needsOnboarding,
+    required this.teacher,
+    required this.studyRooms,
+  });
 
   factory TeacherHome.fromJson(Map<String, dynamic> json) {
     final teacherJson = json['teacher'];
     final studyRoomJson = json['studyRooms'];
     return TeacherHome(
-      teacher: TeacherProfile.fromJson(
-        teacherJson is Map<String, dynamic>
-            ? teacherJson
-            : const <String, dynamic>{},
-      ),
+      needsOnboarding: json['needsOnboarding'] == true,
+      teacher: teacherJson is Map<String, dynamic>
+          ? TeacherProfile.fromJson(teacherJson)
+          : null,
       studyRooms: [
         if (studyRoomJson is List)
           for (final item in studyRoomJson)
@@ -31,7 +49,8 @@ class TeacherHome {
     );
   }
 
-  final TeacherProfile teacher;
+  final bool needsOnboarding;
+  final TeacherProfile? teacher;
   final List<StudyRoomSummary> studyRooms;
 }
 

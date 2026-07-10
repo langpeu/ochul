@@ -17,6 +17,12 @@ type TeacherContext = {
   role: "admin" | "teacher" | string;
 };
 
+type AuthUserContext = {
+  id: string;
+  email: string | null;
+  name: string | null;
+};
+
 type GuardianContact = {
   id: string;
   phone: string;
@@ -27,7 +33,8 @@ type GuardianContact = {
 
 type AppContext = {
   db: SupabaseClient;
-  teacher: TeacherContext;
+  authUser: AuthUserContext;
+  teacher: TeacherContext | null;
 };
 
 const corsHeaders = {
@@ -53,8 +60,9 @@ serve(async (request) => {
   try {
     const payload = await readPayload(request);
     const db = createServiceClient();
-    const teacher = await requireTeacher(request, db);
-    const response = await routeEdgeRequest(payload, { db, teacher });
+    const authUser = await requireAuthUser(request, db);
+    const teacher = await readTeacherByAuthUser(db, authUser.id);
+    const response = await routeEdgeRequest(payload, { db, authUser, teacher });
     return json(response);
   } catch (error) {
     return handleError(error);
@@ -73,6 +81,10 @@ async function routeEdgeRequest(
     return await readMe(context);
   }
 
+  if (method === "POST" && path === "/me/onboard") {
+    return await onboardTeacher(body, context);
+  }
+
   const checkInMatch = path.match(
     /^\/class-sessions\/([^/]+)\/check-in$/,
   );
@@ -84,8 +96,22 @@ async function routeEdgeRequest(
 }
 
 async function readMe(
-  { db, teacher }: AppContext,
+  { db, authUser, teacher }: AppContext,
 ): Promise<Record<string, unknown>> {
+  if (!teacher) {
+    return {
+      ok: true,
+      needsOnboarding: true,
+      authUser: {
+        id: authUser.id,
+        email: authUser.email,
+        name: authUser.name,
+      },
+      teacher: null,
+      studyRooms: [],
+    };
+  }
+
   const { data: teacherProfile, error: teacherError } = await db
     .from("teachers")
     .select("id, name, email, role")
@@ -108,6 +134,7 @@ async function readMe(
 
   return {
     ok: true,
+    needsOnboarding: false,
     teacher: {
       id: teacherProfile.id,
       name: teacherProfile.name,
@@ -122,11 +149,98 @@ async function readMe(
   };
 }
 
+async function onboardTeacher(
+  body: Record<string, unknown>,
+  { db, authUser, teacher }: AppContext,
+): Promise<Record<string, unknown>> {
+  if (teacher) {
+    return await readMe({ db, authUser, teacher });
+  }
+
+  const teacherName = stringValue(body.teacherName) || authUser.name ||
+    authUser.email?.split("@")[0] || "선생님";
+  const studyRoomName = stringValue(body.studyRoomName);
+  if (teacherName.length < 2) {
+    throw new EdgeApiError(400, "선생님 이름은 2자 이상 입력해 주세요.");
+  }
+  if (studyRoomName.length < 2) {
+    throw new EdgeApiError(400, "공부방 이름은 2자 이상 입력해 주세요.");
+  }
+
+  const { data: organization, error: organizationError } = await db
+    .from("organizations")
+    .insert({ name: studyRoomName })
+    .select("id")
+    .single();
+
+  if (organizationError) {
+    throw new EdgeApiError(500, "운영 공간 생성에 실패했습니다.");
+  }
+
+  const { data: teacherProfile, error: teacherError } = await db
+    .from("teachers")
+    .insert({
+      organization_id: organization.id,
+      auth_user_id: authUser.id,
+      name: teacherName,
+      email: authUser.email,
+      role: "teacher",
+    })
+    .select("id, name, email, role")
+    .single();
+
+  if (teacherError) {
+    throw new EdgeApiError(500, "선생님 프로필 생성에 실패했습니다.");
+  }
+
+  const { data: studyRoom, error: studyRoomError } = await db
+    .from("study_rooms")
+    .insert({
+      organization_id: organization.id,
+      name: studyRoomName,
+      owner_teacher_id: teacherProfile.id,
+    })
+    .select("id, name, description")
+    .single();
+
+  if (studyRoomError) {
+    throw new EdgeApiError(500, "공부방 생성에 실패했습니다.");
+  }
+
+  const { error: memberError } = await db.from("study_room_members").insert({
+    study_room_id: studyRoom.id,
+    teacher_id: teacherProfile.id,
+    role: "owner",
+  });
+
+  if (memberError) {
+    throw new EdgeApiError(500, "공부방 권한 생성에 실패했습니다.");
+  }
+
+  return {
+    ok: true,
+    needsOnboarding: false,
+    teacher: {
+      id: teacherProfile.id,
+      name: teacherProfile.name,
+      email: teacherProfile.email,
+      role: teacherProfile.role,
+    },
+    studyRooms: [{
+      id: studyRoom.id,
+      name: studyRoom.name,
+      description: studyRoom.description,
+    }],
+  };
+}
+
 async function checkInStudent(
   classSessionId: string,
   body: Record<string, unknown>,
   { db, teacher }: AppContext,
 ): Promise<Record<string, unknown>> {
+  if (!teacher) throw new EdgeApiError(403, "선생님 프로필이 필요합니다.");
+
   const studentId = stringValue(body.studentId);
   const pin = stringValue(body.pin);
 
@@ -453,10 +567,10 @@ async function createAuditLog(
   if (error) throw new EdgeApiError(500, "사용 히스토리 기록에 실패했습니다.");
 }
 
-async function requireTeacher(
+async function requireAuthUser(
   request: Request,
   db: SupabaseClient,
-): Promise<TeacherContext> {
+): Promise<AuthUserContext> {
   const authHeader = request.headers.get("authorization");
   const jwt = authHeader?.match(/^Bearer\s+(.+)$/i)?.[1];
   if (!jwt) throw new EdgeApiError(401, "로그인이 필요합니다.");
@@ -466,17 +580,34 @@ async function requireTeacher(
     throw new EdgeApiError(401, "로그인 정보를 확인할 수 없습니다.");
   }
 
+  const metadata = userData.user.user_metadata;
+  const metadataName = typeof metadata?.name === "string"
+    ? metadata.name
+    : typeof metadata?.full_name === "string"
+    ? metadata.full_name
+    : null;
+
+  return {
+    id: userData.user.id,
+    email: userData.user.email ?? null,
+    name: metadataName,
+  };
+}
+
+async function readTeacherByAuthUser(
+  db: SupabaseClient,
+  authUserId: string,
+): Promise<TeacherContext | null> {
   const { data: teacher, error: teacherError } = await db
     .from("teachers")
     .select("id, role")
-    .eq("auth_user_id", userData.user.id)
+    .eq("auth_user_id", authUserId)
     .maybeSingle();
 
   if (teacherError) {
     throw new EdgeApiError(500, "선생님 프로필 조회에 실패했습니다.");
   }
-  if (!teacher) throw new EdgeApiError(403, "선생님 프로필이 필요합니다.");
-
+  if (!teacher) return null;
   return { id: teacher.id, role: teacher.role };
 }
 
