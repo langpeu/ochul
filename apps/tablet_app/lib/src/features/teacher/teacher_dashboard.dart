@@ -721,6 +721,87 @@ class _ClassManagementPanelState extends State<_ClassManagementPanel> {
     }
   }
 
+  Future<void> _editClass(ManagedClass classRoom) async {
+    final result = await showDialog<_ClassEditResult>(
+      context: context,
+      builder: (context) => _ClassEditDialog(classRoom: classRoom),
+    );
+    if (result == null) return;
+
+    setState(() => _processingClassId = classRoom.id);
+    try {
+      await widget.service.updateClass(
+        classId: classRoom.id,
+        name: result.name,
+        description: result.description,
+        classKind: result.classKind,
+        startDate: result.startDate,
+        endDate: result.endDate,
+        dayOfWeeks: result.dayOfWeeks,
+        startsAt: result.startsAt,
+        endsAt: result.endsAt,
+      );
+      if (mounted) {
+        setState(() {
+          _classesFuture = widget.service.fetchClasses(widget.studyRoom.id);
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('${classRoom.name} 수업을 수정했습니다.')),
+        );
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('수업 수정에 실패했습니다.')));
+      }
+    } finally {
+      if (mounted) setState(() => _processingClassId = null);
+    }
+  }
+
+  Future<void> _deleteClass(ManagedClass classRoom) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('${classRoom.name} 삭제'),
+        content: const Text('수업을 비활성화하고 목록에서 숨깁니다. 기존 출결과 납부 이력은 유지됩니다.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('취소'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('삭제'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    setState(() => _processingClassId = classRoom.id);
+    try {
+      await widget.service.deleteClass(classRoom.id);
+      if (mounted) {
+        setState(() {
+          _classesFuture = widget.service.fetchClasses(widget.studyRoom.id);
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('${classRoom.name} 수업을 삭제했습니다.')),
+        );
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('수업 삭제에 실패했습니다.')));
+      }
+    } finally {
+      if (mounted) setState(() => _processingClassId = null);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Card(
@@ -894,6 +975,10 @@ class _ClassManagementPanelState extends State<_ClassManagementPanel> {
                                       _cancelToday(classRoom);
                                     case _ClassAction.createMakeup:
                                       _createMakeup(classRoom);
+                                    case _ClassAction.edit:
+                                      _editClass(classRoom);
+                                    case _ClassAction.delete:
+                                      _deleteClass(classRoom);
                                   }
                                 },
                                 itemBuilder: (context) => const [
@@ -918,6 +1003,21 @@ class _ClassManagementPanelState extends State<_ClassManagementPanel> {
                                       title: Text('보강 추가'),
                                     ),
                                   ),
+                                  PopupMenuDivider(),
+                                  PopupMenuItem(
+                                    value: _ClassAction.edit,
+                                    child: ListTile(
+                                      leading: Icon(Icons.edit_outlined),
+                                      title: Text('수정'),
+                                    ),
+                                  ),
+                                  PopupMenuItem(
+                                    value: _ClassAction.delete,
+                                    child: ListTile(
+                                      leading: Icon(Icons.delete_outline),
+                                      title: Text('삭제'),
+                                    ),
+                                  ),
                                 ],
                               ),
                       );
@@ -933,7 +1033,240 @@ class _ClassManagementPanelState extends State<_ClassManagementPanel> {
   }
 }
 
-enum _ClassAction { openAttendance, cancelToday, createMakeup }
+enum _ClassAction { openAttendance, cancelToday, createMakeup, edit, delete }
+
+class _ClassEditResult {
+  const _ClassEditResult({
+    required this.name,
+    required this.description,
+    required this.classKind,
+    required this.startDate,
+    required this.endDate,
+    required this.dayOfWeeks,
+    required this.startsAt,
+    required this.endsAt,
+  });
+
+  final String name;
+  final String description;
+  final String classKind;
+  final String startDate;
+  final String endDate;
+  final List<int> dayOfWeeks;
+  final String startsAt;
+  final String endsAt;
+}
+
+class _ClassEditDialog extends StatefulWidget {
+  const _ClassEditDialog({required this.classRoom});
+
+  final ManagedClass classRoom;
+
+  @override
+  State<_ClassEditDialog> createState() => _ClassEditDialogState();
+}
+
+class _ClassEditDialogState extends State<_ClassEditDialog> {
+  late final TextEditingController _nameController;
+  late final TextEditingController _descriptionController;
+  late final TextEditingController _startDateController;
+  late final TextEditingController _endDateController;
+  late final TextEditingController _startsAtController;
+  late final TextEditingController _endsAtController;
+  late final Set<int> _selectedDays;
+  late String _classKind;
+  String? _errorText;
+
+  @override
+  void initState() {
+    super.initState();
+    final schedules = widget.classRoom.schedules;
+    final firstSchedule = schedules.isEmpty ? null : schedules.first;
+    _nameController = TextEditingController(text: widget.classRoom.name);
+    _descriptionController = TextEditingController(
+      text: widget.classRoom.description,
+    );
+    _startDateController = TextEditingController(
+      text: widget.classRoom.startDate,
+    );
+    _endDateController = TextEditingController(text: widget.classRoom.endDate);
+    _startsAtController = TextEditingController(
+      text: firstSchedule?.startsAt.isNotEmpty == true
+          ? firstSchedule!.startsAt
+          : '15:00',
+    );
+    _endsAtController = TextEditingController(
+      text: firstSchedule?.endsAt.isNotEmpty == true
+          ? firstSchedule!.endsAt
+          : '16:00',
+    );
+    _selectedDays = {
+      for (final schedule in schedules) schedule.dayOfWeek,
+      if (schedules.isEmpty) 1,
+    };
+    _classKind = widget.classRoom.classKind;
+  }
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _descriptionController.dispose();
+    _startDateController.dispose();
+    _endDateController.dispose();
+    _startsAtController.dispose();
+    _endsAtController.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final name = _nameController.text.trim();
+    final startDate = _startDateController.text.trim();
+    final endDate = _endDateController.text.trim();
+    final startsAt = _startsAtController.text.trim();
+    final endsAt = _endsAtController.text.trim();
+    if (name.length < 2 ||
+        !_datePattern.hasMatch(startDate) ||
+        !_datePattern.hasMatch(endDate) ||
+        !_timePattern.hasMatch(startsAt) ||
+        !_timePattern.hasMatch(endsAt) ||
+        _selectedDays.isEmpty) {
+      setState(() => _errorText = '수업명, 기간, 요일, 시간을 입력해 주세요.');
+      return;
+    }
+
+    Navigator.of(context).pop(
+      _ClassEditResult(
+        name: name,
+        description: _descriptionController.text.trim(),
+        classKind: _classKind,
+        startDate: startDate,
+        endDate: endDate,
+        dayOfWeeks: _selectedDays.toList()..sort(),
+        startsAt: startsAt,
+        endsAt: endsAt,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text('${widget.classRoom.name} 수정'),
+      content: SizedBox(
+        width: 440,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: _nameController,
+                decoration: const InputDecoration(
+                  labelText: '수업명',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _descriptionController,
+                decoration: const InputDecoration(
+                  labelText: '수업 설명',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  SizedBox(
+                    width: 130,
+                    child: TextField(
+                      controller: _startDateController,
+                      decoration: const InputDecoration(
+                        labelText: '시작일',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 130,
+                    child: TextField(
+                      controller: _endDateController,
+                      decoration: const InputDecoration(
+                        labelText: '종료일',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 105,
+                    child: TextField(
+                      controller: _startsAtController,
+                      decoration: const InputDecoration(
+                        labelText: '시작',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 105,
+                    child: TextField(
+                      controller: _endsAtController,
+                      decoration: InputDecoration(
+                        labelText: '종료',
+                        errorText: _errorText,
+                        border: const OutlineInputBorder(),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              SegmentedButton<String>(
+                segments: const [
+                  ButtonSegment(value: 'regular', label: Text('기본')),
+                  ButtonSegment(value: 'makeup', label: Text('보강')),
+                  ButtonSegment(value: 'extra', label: Text('추가')),
+                ],
+                selected: {_classKind},
+                onSelectionChanged: (selection) {
+                  setState(() => _classKind = selection.first);
+                },
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 6,
+                children: [
+                  for (var day = 0; day < _dayLabels.length; day++)
+                    FilterChip(
+                      label: Text(_dayLabels[day]),
+                      selected: _selectedDays.contains(day),
+                      onSelected: (selected) {
+                        setState(() {
+                          if (selected) {
+                            _selectedDays.add(day);
+                          } else {
+                            _selectedDays.remove(day);
+                          }
+                        });
+                      },
+                    ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('취소'),
+        ),
+        FilledButton(onPressed: _submit, child: const Text('저장')),
+      ],
+    );
+  }
+}
 
 class _ClassChangeReasonDialog extends StatefulWidget {
   const _ClassChangeReasonDialog({

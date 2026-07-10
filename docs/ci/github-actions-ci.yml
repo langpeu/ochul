@@ -87,14 +87,14 @@ jobs:
 
       - name: Scan for committed secret-like values
         run: |
-          if rg -n --hidden --glob '!.git/**' --glob '!.github/workflows/ci.yml' --glob '!apps/tablet_app/Secrets.dev.config' --glob '!apps/tablet_app/Secrets.prod.config' "(eyJ[A-Za-z0-9_-]{20,}|s[k]-[A-Za-z0-9]|BEGIN [A-Z ]+PRIVATE KEY|PRIVATE KEY-----)" .; then
+          if rg -n --hidden --glob '!.git/**' --glob '!.github/workflows/ci.yml' --glob '!docs/ci/github-actions-ci.yml' --glob '!apps/tablet_app/Secrets.dev.config' --glob '!apps/tablet_app/Secrets.prod.config' "(eyJ[A-Za-z0-9_-]{20,}|s[k]-[A-Za-z0-9]|BEGIN [A-Z ]+PRIVATE KEY|PRIVATE KEY-----)" .; then
             echo "Secret-like value found in tracked files."
             exit 1
           fi
 
       - name: Check no access metadata is stored
         run: |
-          matches="$(rg -n "\bip\b|device|user_agent|user agent|기기 식별자" supabase/migrations supabase/functions docs apps/tablet_app/lib || true)"
+          matches="$(rg -n --glob '!docs/ci/github-actions-ci.yml' "\bip\b|device|user_agent|user agent|기기 식별자" supabase/migrations supabase/functions docs apps/tablet_app/lib || true)"
           echo "$matches"
           if echo "$matches" | rg -v "저장하지 않는다|저장 코드 없음|같은 불필요한 접속 정보는 저장하지 않는다|감사 로그에는 IP"; then
             echo "Unexpected IP/device/user-agent storage reference found."

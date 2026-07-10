@@ -47,6 +47,42 @@ class ClassManagementService {
     throw const ClassManagementException('수업 생성 응답이 올바르지 않습니다.');
   }
 
+  Future<ManagedClass> updateClass({
+    required String classId,
+    required String name,
+    required String description,
+    required String classKind,
+    required String startDate,
+    required String endDate,
+    required List<int> dayOfWeeks,
+    required String startsAt,
+    required String endsAt,
+  }) async {
+    final data = await edgeClient.call(
+      '/classes/$classId',
+      method: EdgeHttpMethod.patch,
+      body: <String, dynamic>{
+        'name': name,
+        'description': description,
+        'classKind': classKind,
+        'startDate': startDate,
+        'endDate': endDate,
+        'dayOfWeeks': dayOfWeeks,
+        'startsAt': startsAt,
+        'endsAt': endsAt,
+      },
+    );
+    final classJson = data['class'];
+    if (classJson is Map<String, dynamic>) {
+      return ManagedClass.fromJson(classJson);
+    }
+    throw const ClassManagementException('수업 수정 응답이 올바르지 않습니다.');
+  }
+
+  Future<void> deleteClass(String classId) async {
+    await edgeClient.call('/classes/$classId', method: EdgeHttpMethod.delete);
+  }
+
   Future<void> openAttendanceSession(String classId) async {
     await edgeClient.call(
       '/classes/$classId/sessions/open',
@@ -100,9 +136,11 @@ class ManagedClass {
     required this.id,
     required this.name,
     required this.classKind,
+    required this.description,
     required this.startDate,
     required this.endDate,
     required this.scheduleText,
+    required this.schedules,
     required this.active,
   });
 
@@ -111,9 +149,16 @@ class ManagedClass {
       id: json['id'] as String? ?? '',
       name: json['name'] as String? ?? '수업',
       classKind: json['classKind'] as String? ?? 'regular',
+      description: json['description'] as String? ?? '',
       startDate: json['startDate'] as String? ?? '',
       endDate: json['endDate'] as String? ?? '',
       scheduleText: json['scheduleText'] as String? ?? '',
+      schedules: [
+        if (json['schedules'] is List)
+          for (final schedule in json['schedules'] as List)
+            if (schedule is Map<String, dynamic>)
+              ManagedClassSchedule.fromJson(schedule),
+      ],
       active: json['active'] as bool? ?? true,
     );
   }
@@ -121,10 +166,32 @@ class ManagedClass {
   final String id;
   final String name;
   final String classKind;
+  final String description;
   final String startDate;
   final String endDate;
   final String scheduleText;
+  final List<ManagedClassSchedule> schedules;
   final bool active;
+}
+
+class ManagedClassSchedule {
+  const ManagedClassSchedule({
+    required this.dayOfWeek,
+    required this.startsAt,
+    required this.endsAt,
+  });
+
+  factory ManagedClassSchedule.fromJson(Map<String, dynamic> json) {
+    return ManagedClassSchedule(
+      dayOfWeek: json['dayOfWeek'] as int? ?? 0,
+      startsAt: json['startsAt'] as String? ?? '',
+      endsAt: json['endsAt'] as String? ?? '',
+    );
+  }
+
+  final int dayOfWeek;
+  final String startsAt;
+  final String endsAt;
 }
 
 class ClassManagementException implements Exception {

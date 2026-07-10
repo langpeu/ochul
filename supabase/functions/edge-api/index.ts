@@ -162,6 +162,16 @@ async function routeEdgeRequest(
     }
   }
 
+  const classMatch = path.match(/^\/classes\/([^/]+)$/);
+  if (classMatch) {
+    if (method === "PATCH") {
+      return await updateClass(classMatch[1], body, context);
+    }
+    if (method === "DELETE") {
+      return await deleteClass(classMatch[1], context);
+    }
+  }
+
   const studyRoomAuditLogsMatch = path.match(
     /^\/study-rooms\/([^/]+)\/audit-logs$/,
   );
@@ -504,9 +514,10 @@ async function listClasses(
   const { data: classes, error } = await db
     .from("classes")
     .select(
-      "id, name, description, class_kind, start_date, end_date, schedule_text, active, class_schedules(day_of_week, starts_at, ends_at)",
+      "id, name, description, class_kind, start_date, end_date, schedule_text, active, class_schedules(day_of_week, starts_at, ends_at, active)",
     )
     .eq("study_room_id", studyRoomId)
+    .eq("active", true)
     .order("created_at", { ascending: false });
 
   if (error) throw new EdgeApiError(500, "수업 목록 조회에 실패했습니다.");
@@ -614,6 +625,152 @@ async function createClass(
       class_schedules: schedules ?? [],
     }),
   };
+}
+
+async function updateClass(
+  classId: string,
+  body: Record<string, unknown>,
+  { db, teacher }: AppContext,
+): Promise<Record<string, unknown>> {
+  const activeTeacher = requireTeacherProfile(teacher);
+  assertUuid(classId, "수업 정보가 올바르지 않습니다.");
+  const classRoom = await readAccessibleClass(db, classId, activeTeacher, {
+    allowAdmin: false,
+  });
+
+  const name = stringValue(body.name);
+  const description = nullableString(body.description);
+  const classKind = normalizeClassKind(body.classKind);
+  const startDate = stringValue(body.startDate);
+  const endDate = stringValue(body.endDate);
+  const dayOfWeeks = normalizeDayOfWeeks(body.dayOfWeeks);
+  const startsAt = normalizeTime(
+    body.startsAt,
+    "수업 시작 시간을 입력해 주세요.",
+  );
+  const endsAt = normalizeTime(body.endsAt, "수업 종료 시간을 입력해 주세요.");
+
+  if (name.length < 2) throw new EdgeApiError(400, "수업명을 입력해 주세요.");
+  assertDate(startDate, "수업 시작일이 올바르지 않습니다.");
+  assertDate(endDate, "수업 종료일이 올바르지 않습니다.");
+  if (endDate < startDate) {
+    throw new EdgeApiError(400, "수업 종료일은 시작일 이후여야 합니다.");
+  }
+  if (startsAt >= endsAt) {
+    throw new EdgeApiError(400, "수업 종료 시간은 시작 시간 이후여야 합니다.");
+  }
+
+  const scheduleText = formatScheduleText(dayOfWeeks, startsAt, endsAt);
+  const { data: updatedClass, error: classError } = await db
+    .from("classes")
+    .update({
+      name,
+      description,
+      class_kind: classKind,
+      start_date: startDate,
+      end_date: endDate,
+      schedule_text: scheduleText,
+    })
+    .eq("id", classId)
+    .eq("teacher_id", activeTeacher.id)
+    .select(
+      "id, name, description, class_kind, start_date, end_date, schedule_text, active",
+    )
+    .single();
+
+  if (classError) throw new EdgeApiError(500, "수업 수정에 실패했습니다.");
+
+  const { error: inactiveScheduleError } = await db
+    .from("class_schedules")
+    .update({ active: false })
+    .eq("class_id", classId);
+
+  if (inactiveScheduleError) {
+    throw new EdgeApiError(500, "기존 수업 일정 정리에 실패했습니다.");
+  }
+
+  const scheduleRows = dayOfWeeks.map((dayOfWeek) => ({
+    class_id: classId,
+    day_of_week: dayOfWeek,
+    starts_at: startsAt,
+    ends_at: endsAt,
+    active: true,
+  }));
+  const { data: schedules, error: scheduleError } = await db
+    .from("class_schedules")
+    .insert(scheduleRows)
+    .select("day_of_week, starts_at, ends_at");
+
+  if (scheduleError) {
+    throw new EdgeApiError(500, "수업 일정 저장에 실패했습니다.");
+  }
+
+  await createClassAuditLog(db, {
+    organizationId: classRoom.organization_id,
+    studyRoomId: classRoom.study_room_id,
+    actorTeacherId: activeTeacher.id,
+    classId,
+    action: "updated",
+    title: "수업 수정",
+    summary: `${updatedClass.name} 수업 정보를 수정했습니다.`,
+  });
+
+  return {
+    ok: true,
+    class: formatClassSummary({
+      ...updatedClass,
+      class_schedules: schedules ?? [],
+    }),
+  };
+}
+
+async function deleteClass(
+  classId: string,
+  { db, teacher }: AppContext,
+): Promise<Record<string, unknown>> {
+  const activeTeacher = requireTeacherProfile(teacher);
+  assertUuid(classId, "수업 정보가 올바르지 않습니다.");
+  const classRoom = await readAccessibleClass(db, classId, activeTeacher, {
+    allowAdmin: false,
+  });
+
+  const { error: classError } = await db
+    .from("classes")
+    .update({ active: false })
+    .eq("id", classId)
+    .eq("teacher_id", activeTeacher.id);
+
+  if (classError) throw new EdgeApiError(500, "수업 삭제에 실패했습니다.");
+
+  const { error: enrollmentError } = await db
+    .from("class_students")
+    .update({ active: false })
+    .eq("class_id", classId);
+
+  if (enrollmentError) {
+    throw new EdgeApiError(500, "수업 학생 등록 정리에 실패했습니다.");
+  }
+
+  const { error: scheduleError } = await db
+    .from("class_schedules")
+    .update({ active: false })
+    .eq("class_id", classId);
+
+  if (scheduleError) {
+    throw new EdgeApiError(500, "수업 일정 정리에 실패했습니다.");
+  }
+
+  await createClassAuditLog(db, {
+    organizationId: classRoom.organization_id,
+    studyRoomId: classRoom.study_room_id,
+    actorTeacherId: activeTeacher.id,
+    classId,
+    action: "deleted",
+    title: "수업 삭제",
+    summary: `${classRoom.name} 수업을 비활성화했습니다.`,
+  });
+
+  return { ok: true };
 }
 
 async function listClassStudents(
@@ -2932,6 +3089,7 @@ async function createClassAuditLog(
     studyRoomId: string;
     actorTeacherId: string;
     classId: string;
+    action?: "created" | "updated" | "deleted";
     title: string;
     summary: string;
   },
@@ -2943,7 +3101,7 @@ async function createClassAuditLog(
     class_id: input.classId,
     entity_type: "class",
     entity_id: input.classId,
-    action: "created",
+    action: input.action ?? "created",
     title: input.title,
     summary: input.summary,
   });
@@ -3244,7 +3402,9 @@ function normalizeTime(value: unknown, message: string) {
 
 function formatClassSummary(classRoom: Record<string, unknown>) {
   const schedules = Array.isArray(classRoom.class_schedules)
-    ? classRoom.class_schedules
+    ? classRoom.class_schedules.filter((schedule) =>
+      (schedule as Record<string, unknown>).active !== false
+    )
     : [];
   return {
     id: classRoom.id,
