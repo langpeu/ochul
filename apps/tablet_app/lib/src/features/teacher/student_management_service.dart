@@ -67,12 +67,40 @@ class StudentManagementService {
     return _readStudent(data, '학생 삭제 응답이 올바르지 않습니다.');
   }
 
+  Future<List<StudentGuardian>> fetchGuardians(String studentId) async {
+    final data = await edgeClient.call('/students/$studentId/guardians');
+    return _readGuardians(data);
+  }
+
+  Future<List<StudentGuardian>> saveGuardians({
+    required String studentId,
+    required List<StudentGuardian> guardians,
+  }) async {
+    final data = await edgeClient.call(
+      '/students/$studentId/guardians',
+      method: EdgeHttpMethod.put,
+      body: <String, dynamic>{
+        'guardians': guardians.map((guardian) => guardian.toJson()).toList(),
+      },
+    );
+    return _readGuardians(data);
+  }
+
   ManagedStudent _readStudent(Map<String, dynamic> data, String message) {
     final studentJson = data['student'];
     if (studentJson is Map<String, dynamic>) {
       return ManagedStudent.fromJson(studentJson);
     }
     throw StudentManagementException(message);
+  }
+
+  List<StudentGuardian> _readGuardians(Map<String, dynamic> data) {
+    final guardiansJson = data['guardians'];
+    return [
+      if (guardiansJson is List)
+        for (final item in guardiansJson)
+          if (item is Map<String, dynamic>) StudentGuardian.fromJson(item),
+    ];
   }
 }
 
@@ -97,6 +125,46 @@ class ManagedStudent {
   final String code;
   final String name;
   final String status;
+}
+
+class StudentGuardian {
+  const StudentGuardian({
+    required this.id,
+    required this.name,
+    required this.phone,
+    required this.relationship,
+    required this.kakaoOptIn,
+    required this.primaryContact,
+  });
+
+  factory StudentGuardian.fromJson(Map<String, dynamic> json) {
+    return StudentGuardian(
+      id: json['id'] as String? ?? '',
+      name: json['name'] as String? ?? '',
+      phone: json['phone'] as String? ?? '',
+      relationship: json['relationship'] as String? ?? '',
+      kakaoOptIn: json['kakaoOptIn'] as bool? ?? true,
+      primaryContact: json['primaryContact'] as bool? ?? false,
+    );
+  }
+
+  final String id;
+  final String name;
+  final String phone;
+  final String relationship;
+  final bool kakaoOptIn;
+  final bool primaryContact;
+
+  Map<String, dynamic> toJson() {
+    return <String, dynamic>{
+      if (id.isNotEmpty) 'id': id,
+      'name': name,
+      'phone': phone,
+      'relationship': relationship,
+      'kakaoOptIn': kakaoOptIn,
+      'primaryContact': primaryContact,
+    };
+  }
 }
 
 class StudentManagementException implements Exception {

@@ -136,6 +136,20 @@ async function routeEdgeRequest(
     return await resetStudentPin(resetStudentPinMatch[1], body, context);
   }
 
+  const studentGuardiansMatch = path.match(/^\/students\/([^/]+)\/guardians$/);
+  if (studentGuardiansMatch) {
+    if (method === "GET") {
+      return await listStudentGuardians(studentGuardiansMatch[1], context);
+    }
+    if (method === "PUT") {
+      return await saveStudentGuardians(
+        studentGuardiansMatch[1],
+        body,
+        context,
+      );
+    }
+  }
+
   const studyRoomClassesMatch = path.match(
     /^\/study-rooms\/([^/]+)\/classes$/,
   );
@@ -1612,6 +1626,145 @@ async function leaveStudent(
   return { ok: true, student: formatManagedStudent(student) };
 }
 
+async function listStudentGuardians(
+  studentId: string,
+  { db, teacher }: AppContext,
+): Promise<Record<string, unknown>> {
+  const activeTeacher = requireTeacherProfile(teacher);
+  assertUuid(studentId, "학생 정보가 올바르지 않습니다.");
+
+  const { data: student, error: studentError } = await db
+    .from("students")
+    .select("id, study_room_id")
+    .eq("id", studentId)
+    .maybeSingle();
+
+  if (studentError) throw new EdgeApiError(500, "학생 조회에 실패했습니다.");
+  if (!student) throw new EdgeApiError(404, "학생을 찾을 수 없습니다.");
+  await assertStudyRoomAccess(db, activeTeacher, student.study_room_id, {
+    allowAdmin: true,
+  });
+
+  const { data: rows, error } = await db
+    .from("student_guardians")
+    .select(
+      "relationship, primary_contact, guardians!inner(id, name, phone, kakao_opt_in, opt_out_at)",
+    )
+    .eq("student_id", studentId)
+    .order("created_at", { ascending: true });
+
+  if (error) throw new EdgeApiError(500, "보호자 목록 조회에 실패했습니다.");
+
+  return {
+    ok: true,
+    guardians: (rows ?? []).map(formatStudentGuardian),
+  };
+}
+
+async function saveStudentGuardians(
+  studentId: string,
+  body: Record<string, unknown>,
+  { db, teacher }: AppContext,
+): Promise<Record<string, unknown>> {
+  const activeTeacher = requireTeacherProfile(teacher);
+  assertUuid(studentId, "학생 정보가 올바르지 않습니다.");
+  const student = await readStudentForOwnerWrite(db, studentId, activeTeacher);
+  const guardians = normalizeGuardianInputs(body.guardians);
+
+  const keptGuardianIds: string[] = [];
+  for (const guardianInput of guardians) {
+    let guardianId = guardianInput.id;
+    const guardianValues = {
+      name: guardianInput.name || null,
+      phone: guardianInput.phone,
+      kakao_opt_in: guardianInput.kakaoOptIn,
+      consent_confirmed_at: guardianInput.kakaoOptIn
+        ? new Date().toISOString()
+        : null,
+      consent_method: guardianInput.kakaoOptIn ? "teacher_confirmed" : null,
+      consent_confirmed_by_teacher_id: guardianInput.kakaoOptIn
+        ? activeTeacher.id
+        : null,
+      opt_out_at: guardianInput.kakaoOptIn ? null : new Date().toISOString(),
+      deleted_at: null,
+    };
+
+    if (guardianId) {
+      const { error: updateError } = await db
+        .from("guardians")
+        .update(guardianValues)
+        .eq("id", guardianId)
+        .eq("study_room_id", student.study_room_id);
+      if (updateError) {
+        throw new EdgeApiError(500, "보호자 정보 수정에 실패했습니다.");
+      }
+    } else {
+      const { data: guardian, error: insertError } = await db
+        .from("guardians")
+        .insert({
+          organization_id: student.organization_id,
+          study_room_id: student.study_room_id,
+          ...guardianValues,
+        })
+        .select("id")
+        .single();
+      if (insertError) {
+        throw new EdgeApiError(500, "보호자 정보 생성에 실패했습니다.");
+      }
+      guardianId = guardian.id;
+    }
+    if (!guardianId) {
+      throw new EdgeApiError(500, "보호자 정보 저장에 실패했습니다.");
+    }
+
+    keptGuardianIds.push(guardianId);
+    const { error: linkError } = await db
+      .from("student_guardians")
+      .upsert({
+        student_id: studentId,
+        guardian_id: guardianId,
+        relationship: guardianInput.relationship || null,
+        primary_contact: guardianInput.primaryContact,
+      }, { onConflict: "student_id,guardian_id" });
+    if (linkError) {
+      throw new EdgeApiError(500, "학생 보호자 연결 저장에 실패했습니다.");
+    }
+  }
+
+  let unlinkQuery = db
+    .from("student_guardians")
+    .delete()
+    .eq("student_id", studentId);
+  if (keptGuardianIds.length > 0) {
+    unlinkQuery = unlinkQuery.not(
+      "guardian_id",
+      "in",
+      `(${keptGuardianIds.join(",")})`,
+    );
+  }
+  const { error: unlinkError } = await unlinkQuery;
+  if (unlinkError) {
+    throw new EdgeApiError(500, "학생 보호자 연결 정리에 실패했습니다.");
+  }
+
+  await createGuardianAuditLog(db, {
+    organizationId: student.organization_id,
+    studyRoomId: student.study_room_id,
+    actorTeacherId: activeTeacher.id,
+    studentId,
+    entityId: studentId,
+    title: "보호자 정보 저장",
+    summary:
+      `${student.name} 학생의 보호자 ${guardians.length}명을 저장했습니다.`,
+  });
+
+  return await listStudentGuardians(studentId, {
+    db,
+    authUser: { id: "", email: null, name: null },
+    teacher: activeTeacher,
+  });
+}
+
 async function checkInStudent(
   classSessionId: string,
   body: Record<string, unknown>,
@@ -2354,6 +2507,33 @@ async function createStudentAuditLog(
   if (error) throw new EdgeApiError(500, "사용 히스토리 기록에 실패했습니다.");
 }
 
+async function createGuardianAuditLog(
+  db: SupabaseClient,
+  input: {
+    organizationId: string;
+    studyRoomId: string;
+    actorTeacherId: string;
+    studentId: string;
+    entityId: string;
+    title: string;
+    summary: string;
+  },
+) {
+  const { error } = await db.from("audit_logs").insert({
+    organization_id: input.organizationId,
+    study_room_id: input.studyRoomId,
+    actor_teacher_id: input.actorTeacherId,
+    student_id: input.studentId,
+    entity_type: "guardian",
+    entity_id: input.entityId,
+    action: "updated",
+    title: input.title,
+    summary: input.summary,
+  });
+
+  if (error) throw new EdgeApiError(500, "사용 히스토리 기록에 실패했습니다.");
+}
+
 async function createClassAuditLog(
   db: SupabaseClient,
   input: {
@@ -2601,6 +2781,36 @@ function normalizeStudentStatus(value: unknown) {
   return status;
 }
 
+function normalizeGuardianInputs(value: unknown) {
+  if (!Array.isArray(value)) {
+    throw new EdgeApiError(400, "보호자 목록이 올바르지 않습니다.");
+  }
+  return value.map((item) => {
+    if (!item || typeof item !== "object") {
+      throw new EdgeApiError(400, "보호자 정보가 올바르지 않습니다.");
+    }
+    const input = item as Record<string, unknown>;
+    const id = stringValue(input.id);
+    const name = stringValue(input.name);
+    const phone = stringValue(input.phone);
+    const relationship = stringValue(input.relationship);
+    if (id && !uuidPattern.test(id)) {
+      throw new EdgeApiError(400, "보호자 정보가 올바르지 않습니다.");
+    }
+    if (phone.length < 7) {
+      throw new EdgeApiError(400, "보호자 전화번호를 입력해 주세요.");
+    }
+    return {
+      id: id || null,
+      name,
+      phone,
+      relationship,
+      kakaoOptIn: input.kakaoOptIn !== false,
+      primaryContact: input.primaryContact === true,
+    };
+  });
+}
+
 function normalizePaymentStatus(value: unknown) {
   const status = stringValue(value) || "unpaid";
   if (!["unpaid", "paid", "partial", "exempt", "refunded"].includes(status)) {
@@ -2669,6 +2879,18 @@ function formatPaymentStatus(row: Record<string, unknown>) {
     status: row.status,
     paidAt: row.paid_at,
     note: row.note,
+  };
+}
+
+function formatStudentGuardian(row: Record<string, unknown>) {
+  const guardian = normalizeJoinedObject(row.guardians);
+  return {
+    id: guardian.id,
+    name: guardian.name,
+    phone: guardian.phone,
+    relationship: row.relationship,
+    kakaoOptIn: guardian.kakao_opt_in === true && guardian.opt_out_at === null,
+    primaryContact: row.primary_contact,
   };
 }
 

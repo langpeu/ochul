@@ -1863,6 +1863,19 @@ class _StudentManagementPanelState extends State<_StudentManagementPanel> {
     }
   }
 
+  Future<void> _manageGuardians(ManagedStudent student) async {
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (context) =>
+          _StudentGuardiansDialog(student: student, service: widget.service),
+    );
+    if (saved == true && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('${student.name} 보호자 정보를 저장했습니다.')),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Card(
@@ -1969,6 +1982,8 @@ class _StudentManagementPanelState extends State<_StudentManagementPanel> {
                                       _editStudent(student);
                                     case _StudentAction.resetPin:
                                       _resetPin(student);
+                                    case _StudentAction.guardians:
+                                      _manageGuardians(student);
                                     case _StudentAction.delete:
                                       _deleteStudent(student);
                                   }
@@ -1986,6 +2001,15 @@ class _StudentManagementPanelState extends State<_StudentManagementPanel> {
                                     child: ListTile(
                                       leading: Icon(Icons.password_outlined),
                                       title: Text('비밀번호 리셋'),
+                                    ),
+                                  ),
+                                  const PopupMenuItem(
+                                    value: _StudentAction.guardians,
+                                    child: ListTile(
+                                      leading: Icon(
+                                        Icons.contact_phone_outlined,
+                                      ),
+                                      title: Text('보호자 관리'),
                                     ),
                                   ),
                                   if (student.status != 'left')
@@ -2011,7 +2035,7 @@ class _StudentManagementPanelState extends State<_StudentManagementPanel> {
   }
 }
 
-enum _StudentAction { edit, resetPin, delete }
+enum _StudentAction { edit, resetPin, guardians, delete }
 
 class _StudentEditResult {
   const _StudentEditResult({
@@ -2177,6 +2201,288 @@ class _StudentPinResetDialogState extends State<_StudentPinResetDialog> {
           child: const Text('취소'),
         ),
         FilledButton(onPressed: _submit, child: const Text('리셋')),
+      ],
+    );
+  }
+}
+
+class _GuardianDraft {
+  _GuardianDraft({
+    required this.id,
+    required this.name,
+    required this.phone,
+    required this.relationship,
+    required this.kakaoOptIn,
+    required this.primaryContact,
+  });
+
+  factory _GuardianDraft.fromGuardian(StudentGuardian guardian) {
+    return _GuardianDraft(
+      id: guardian.id,
+      name: guardian.name,
+      phone: guardian.phone,
+      relationship: guardian.relationship,
+      kakaoOptIn: guardian.kakaoOptIn,
+      primaryContact: guardian.primaryContact,
+    );
+  }
+
+  String id;
+  String name;
+  String phone;
+  String relationship;
+  bool kakaoOptIn;
+  bool primaryContact;
+
+  StudentGuardian toGuardian() {
+    return StudentGuardian(
+      id: id,
+      name: name.trim(),
+      phone: phone.trim(),
+      relationship: relationship.trim(),
+      kakaoOptIn: kakaoOptIn,
+      primaryContact: primaryContact,
+    );
+  }
+}
+
+class _StudentGuardiansDialog extends StatefulWidget {
+  const _StudentGuardiansDialog({required this.student, required this.service});
+
+  final ManagedStudent student;
+  final StudentManagementService service;
+
+  @override
+  State<_StudentGuardiansDialog> createState() =>
+      _StudentGuardiansDialogState();
+}
+
+class _StudentGuardiansDialogState extends State<_StudentGuardiansDialog> {
+  late Future<List<StudentGuardian>> _guardiansFuture;
+  final _drafts = <_GuardianDraft>[];
+  String? _errorText;
+  var _loaded = false;
+  var _saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _guardiansFuture = widget.service.fetchGuardians(widget.student.id);
+  }
+
+  void _hydrate(List<StudentGuardian> guardians) {
+    if (_loaded) return;
+    _drafts
+      ..clear()
+      ..addAll(guardians.map(_GuardianDraft.fromGuardian));
+    _loaded = true;
+  }
+
+  void _addGuardian() {
+    setState(() {
+      _drafts.add(
+        _GuardianDraft(
+          id: '',
+          name: '',
+          phone: '',
+          relationship: '',
+          kakaoOptIn: true,
+          primaryContact: _drafts.isEmpty,
+        ),
+      );
+    });
+  }
+
+  Future<void> _save() async {
+    final guardians = _drafts.map((draft) => draft.toGuardian()).toList();
+    if (guardians.any((guardian) => guardian.phone.trim().length < 7)) {
+      setState(() => _errorText = '보호자 전화번호를 입력해 주세요.');
+      return;
+    }
+    if (guardians.where((guardian) => guardian.primaryContact).length > 1) {
+      setState(() => _errorText = '대표 연락처는 한 명만 선택해 주세요.');
+      return;
+    }
+
+    setState(() {
+      _errorText = null;
+      _saving = true;
+    });
+    try {
+      await widget.service.saveGuardians(
+        studentId: widget.student.id,
+        guardians: guardians,
+      );
+      if (mounted) Navigator.of(context).pop(true);
+    } catch (_) {
+      if (mounted) setState(() => _errorText = '보호자 정보 저장에 실패했습니다.');
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text('${widget.student.name} 보호자 관리'),
+      content: SizedBox(
+        width: 560,
+        child: FutureBuilder<List<StudentGuardian>>(
+          future: _guardiansFuture,
+          builder: (context, snapshot) {
+            if (snapshot.connectionState != ConnectionState.done) {
+              return const SizedBox(
+                height: 180,
+                child: Center(child: CircularProgressIndicator()),
+              );
+            }
+            if (snapshot.hasError) {
+              return Text('보호자 정보를 불러오지 못했습니다. ${snapshot.error}');
+            }
+            _hydrate(snapshot.data ?? const <StudentGuardian>[]);
+            return Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (_errorText != null)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Text(
+                      _errorText!,
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.error,
+                      ),
+                    ),
+                  ),
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 360),
+                  child: _drafts.isEmpty
+                      ? const Center(child: Text('등록된 보호자가 없습니다.'))
+                      : ListView.builder(
+                          shrinkWrap: true,
+                          itemCount: _drafts.length,
+                          itemBuilder: (context, index) {
+                            final draft = _drafts[index];
+                            return Padding(
+                              padding: const EdgeInsets.only(bottom: 10),
+                              child: DecoratedBox(
+                                decoration: BoxDecoration(
+                                  border: Border.all(
+                                    color: const Color(0xFFE3E7EB),
+                                  ),
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: Padding(
+                                  padding: const EdgeInsets.all(10),
+                                  child: Column(
+                                    children: [
+                                      Row(
+                                        children: [
+                                          Expanded(
+                                            child: TextFormField(
+                                              initialValue: draft.name,
+                                              decoration: const InputDecoration(
+                                                labelText: '보호자명',
+                                                border: OutlineInputBorder(),
+                                              ),
+                                              onChanged: (value) =>
+                                                  draft.name = value,
+                                            ),
+                                          ),
+                                          const SizedBox(width: 8),
+                                          Expanded(
+                                            child: TextFormField(
+                                              initialValue: draft.phone,
+                                              keyboardType: TextInputType.phone,
+                                              decoration: const InputDecoration(
+                                                labelText: '전화번호',
+                                                border: OutlineInputBorder(),
+                                              ),
+                                              onChanged: (value) =>
+                                                  draft.phone = value,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 8),
+                                      Row(
+                                        children: [
+                                          Expanded(
+                                            child: TextFormField(
+                                              initialValue: draft.relationship,
+                                              decoration: const InputDecoration(
+                                                labelText: '관계',
+                                                border: OutlineInputBorder(),
+                                              ),
+                                              onChanged: (value) =>
+                                                  draft.relationship = value,
+                                            ),
+                                          ),
+                                          const SizedBox(width: 8),
+                                          FilterChip(
+                                            label: const Text('카카오 수신'),
+                                            selected: draft.kakaoOptIn,
+                                            onSelected: (selected) {
+                                              setState(() {
+                                                draft.kakaoOptIn = selected;
+                                              });
+                                            },
+                                          ),
+                                          const SizedBox(width: 8),
+                                          FilterChip(
+                                            label: const Text('대표'),
+                                            selected: draft.primaryContact,
+                                            onSelected: (selected) {
+                                              setState(() {
+                                                for (final item in _drafts) {
+                                                  item.primaryContact = false;
+                                                }
+                                                draft.primaryContact = selected;
+                                              });
+                                            },
+                                          ),
+                                          IconButton(
+                                            tooltip: '삭제',
+                                            icon: const Icon(
+                                              Icons.delete_outline,
+                                            ),
+                                            onPressed: () {
+                                              setState(
+                                                () => _drafts.removeAt(index),
+                                              );
+                                            },
+                                          ),
+                                        ],
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                ),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton.icon(
+                    onPressed: _saving ? null : _addGuardian,
+                    icon: const Icon(Icons.add),
+                    label: const Text('보호자 추가'),
+                  ),
+                ),
+              ],
+            );
+          },
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: _saving ? null : () => Navigator.of(context).pop(false),
+          child: const Text('취소'),
+        ),
+        FilledButton(
+          onPressed: _saving ? null : _save,
+          child: Text(_saving ? '저장 중' : '저장'),
+        ),
       ],
     );
   }

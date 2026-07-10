@@ -65,7 +65,8 @@ Edge API 경로는 REST 스타일로 간결하고 명확하게 둔다.
 - `PATCH /students/{studentId}`: 학생 수정
 - `DELETE /students/{studentId}`: 학생 퇴원 처리와 수업 등록 비활성화
 - `POST /students/{studentId}/pin/reset`: 학생 출결 비밀번호 리셋
-- `PUT /students/{studentId}/guardians`: 보호자 연결 저장
+- `GET /students/{studentId}/guardians`: 학생 보호자 목록
+- `PUT /students/{studentId}/guardians`: 보호자 연락처, 관계, 카카오 수신 동의, 대표 연락처 저장
 
 ### classes
 
