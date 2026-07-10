@@ -63,7 +63,7 @@ Edge API 경로는 REST 스타일로 간결하고 명확하게 둔다.
 - `POST /study-rooms/{studyRoomId}/students`: 학생 생성, 6자리 출결 비밀번호 해시 저장
 - `GET /students/{studentId}`: 학생 상세
 - `PATCH /students/{studentId}`: 학생 수정
-- `DELETE /students/{studentId}`: 학생 삭제 또는 비활성화
+- `DELETE /students/{studentId}`: 학생 퇴원 처리와 수업 등록 비활성화
 - `POST /students/{studentId}/pin/reset`: 학생 출결 비밀번호 리셋
 - `PUT /students/{studentId}/guardians`: 보호자 연결 저장
 

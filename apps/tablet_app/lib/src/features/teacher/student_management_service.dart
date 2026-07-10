@@ -32,6 +32,48 @@ class StudentManagementService {
     }
     throw const StudentManagementException('학생 등록 응답이 올바르지 않습니다.');
   }
+
+  Future<ManagedStudent> updateStudent({
+    required String studentId,
+    required String name,
+    required String code,
+    required String status,
+  }) async {
+    final data = await edgeClient.call(
+      '/students/$studentId',
+      method: EdgeHttpMethod.patch,
+      body: <String, dynamic>{'name': name, 'code': code, 'status': status},
+    );
+    return _readStudent(data, '학생 수정 응답이 올바르지 않습니다.');
+  }
+
+  Future<ManagedStudent> resetStudentPin({
+    required String studentId,
+    required String pin,
+  }) async {
+    final data = await edgeClient.call(
+      '/students/$studentId/pin/reset',
+      method: EdgeHttpMethod.post,
+      body: <String, dynamic>{'pin': pin},
+    );
+    return _readStudent(data, '비밀번호 리셋 응답이 올바르지 않습니다.');
+  }
+
+  Future<ManagedStudent> deleteStudent(String studentId) async {
+    final data = await edgeClient.call(
+      '/students/$studentId',
+      method: EdgeHttpMethod.delete,
+    );
+    return _readStudent(data, '학생 삭제 응답이 올바르지 않습니다.');
+  }
+
+  ManagedStudent _readStudent(Map<String, dynamic> data, String message) {
+    final studentJson = data['student'];
+    if (studentJson is Map<String, dynamic>) {
+      return ManagedStudent.fromJson(studentJson);
+    }
+    throw StudentManagementException(message);
+  }
 }
 
 class ManagedStudent {

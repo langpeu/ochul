@@ -975,7 +975,11 @@ class _EnrollmentManagementPanelState
                       .map((student) => student.id)
                       .toSet();
                   final availableStudents = data.students
-                      .where((student) => !enrolledIds.contains(student.id))
+                      .where(
+                        (student) =>
+                            student.status == 'active' &&
+                            !enrolledIds.contains(student.id),
+                      )
                       .toList();
 
                   return Column(
@@ -1141,6 +1145,7 @@ class _StudentManagementPanelState extends State<_StudentManagementPanel> {
   final _pinController = TextEditingController();
   String? _errorText;
   var _submitting = false;
+  String? _processingStudentId;
 
   @override
   void initState() {
@@ -1191,6 +1196,110 @@ class _StudentManagementPanelState extends State<_StudentManagementPanel> {
     } finally {
       if (mounted) {
         setState(() => _submitting = false);
+      }
+    }
+  }
+
+  Future<void> _refreshStudents() async {
+    setState(() {
+      _studentsFuture = widget.service.fetchStudents(widget.studyRoom.id);
+    });
+  }
+
+  Future<void> _editStudent(ManagedStudent student) async {
+    final result = await showDialog<_StudentEditResult>(
+      context: context,
+      builder: (context) => _StudentEditDialog(student: student),
+    );
+    if (result == null) return;
+
+    setState(() => _processingStudentId = student.id);
+    try {
+      await widget.service.updateStudent(
+        studentId: student.id,
+        name: result.name,
+        code: result.code,
+        status: result.status,
+      );
+      if (mounted) {
+        await _refreshStudents();
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('학생 수정에 실패했습니다.')));
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _processingStudentId = null);
+      }
+    }
+  }
+
+  Future<void> _resetPin(ManagedStudent student) async {
+    final pin = await showDialog<String>(
+      context: context,
+      builder: (context) => _StudentPinResetDialog(studentName: student.name),
+    );
+    if (pin == null) return;
+
+    setState(() => _processingStudentId = student.id);
+    try {
+      await widget.service.resetStudentPin(studentId: student.id, pin: pin);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('${student.name} 비밀번호를 리셋했습니다.')),
+        );
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('비밀번호 리셋에 실패했습니다.')));
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _processingStudentId = null);
+      }
+    }
+  }
+
+  Future<void> _deleteStudent(ManagedStudent student) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('학생 삭제'),
+        content: Text('${student.name} 학생을 삭제 처리할까요?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('취소'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('삭제'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    setState(() => _processingStudentId = student.id);
+    try {
+      await widget.service.deleteStudent(student.id);
+      if (mounted) {
+        await _refreshStudents();
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('학생 삭제 처리에 실패했습니다.')));
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _processingStudentId = null);
       }
     }
   }
@@ -1276,11 +1385,60 @@ class _StudentManagementPanelState extends State<_StudentManagementPanel> {
                     itemCount: students.length,
                     itemBuilder: (context, index) {
                       final student = students[index];
+                      final processing = _processingStudentId == student.id;
                       return ListTile(
                         contentPadding: EdgeInsets.zero,
                         leading: const Icon(Icons.person_outline),
                         title: Text(student.name),
-                        subtitle: Text('${student.code} · ${student.status}'),
+                        subtitle: Text(
+                          '${student.code} · ${_studentStatusLabel(student.status)}',
+                        ),
+                        trailing: processing
+                            ? const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : PopupMenuButton<_StudentAction>(
+                                tooltip: '학생 작업',
+                                icon: const Icon(Icons.more_vert),
+                                onSelected: (action) {
+                                  switch (action) {
+                                    case _StudentAction.edit:
+                                      _editStudent(student);
+                                    case _StudentAction.resetPin:
+                                      _resetPin(student);
+                                    case _StudentAction.delete:
+                                      _deleteStudent(student);
+                                  }
+                                },
+                                itemBuilder: (context) => [
+                                  const PopupMenuItem(
+                                    value: _StudentAction.edit,
+                                    child: ListTile(
+                                      leading: Icon(Icons.edit_outlined),
+                                      title: Text('수정'),
+                                    ),
+                                  ),
+                                  const PopupMenuItem(
+                                    value: _StudentAction.resetPin,
+                                    child: ListTile(
+                                      leading: Icon(Icons.password_outlined),
+                                      title: Text('비밀번호 리셋'),
+                                    ),
+                                  ),
+                                  if (student.status != 'left')
+                                    const PopupMenuItem(
+                                      value: _StudentAction.delete,
+                                      child: ListTile(
+                                        leading: Icon(Icons.delete_outline),
+                                        title: Text('삭제'),
+                                      ),
+                                    ),
+                                ],
+                              ),
                       );
                     },
                   );
@@ -1290,6 +1448,177 @@ class _StudentManagementPanelState extends State<_StudentManagementPanel> {
           ],
         ),
       ),
+    );
+  }
+}
+
+enum _StudentAction { edit, resetPin, delete }
+
+class _StudentEditResult {
+  const _StudentEditResult({
+    required this.name,
+    required this.code,
+    required this.status,
+  });
+
+  final String name;
+  final String code;
+  final String status;
+}
+
+class _StudentEditDialog extends StatefulWidget {
+  const _StudentEditDialog({required this.student});
+
+  final ManagedStudent student;
+
+  @override
+  State<_StudentEditDialog> createState() => _StudentEditDialogState();
+}
+
+class _StudentEditDialogState extends State<_StudentEditDialog> {
+  late final TextEditingController _nameController;
+  late final TextEditingController _codeController;
+  late String _status;
+  String? _errorText;
+
+  @override
+  void initState() {
+    super.initState();
+    _nameController = TextEditingController(text: widget.student.name);
+    _codeController = TextEditingController(text: widget.student.code);
+    _status = widget.student.status;
+  }
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _codeController.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final name = _nameController.text.trim();
+    final code = _codeController.text.trim();
+    if (name.length < 2 || code.isEmpty) {
+      setState(() => _errorText = '학생 이름과 학생번호를 입력해 주세요.');
+      return;
+    }
+    Navigator.of(
+      context,
+    ).pop(_StudentEditResult(name: name, code: code, status: _status));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('학생 수정'),
+      content: SizedBox(
+        width: 360,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: _nameController,
+              decoration: const InputDecoration(
+                labelText: '학생명',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _codeController,
+              decoration: InputDecoration(
+                labelText: '학생번호',
+                errorText: _errorText,
+                border: const OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<String>(
+              initialValue: _status,
+              decoration: const InputDecoration(
+                labelText: '상태',
+                border: OutlineInputBorder(),
+              ),
+              items: const [
+                DropdownMenuItem(value: 'active', child: Text('재원')),
+                DropdownMenuItem(value: 'paused', child: Text('일시중지')),
+                DropdownMenuItem(value: 'left', child: Text('퇴원')),
+              ],
+              onChanged: (value) {
+                if (value != null) {
+                  setState(() => _status = value);
+                }
+              },
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('취소'),
+        ),
+        FilledButton(onPressed: _submit, child: const Text('저장')),
+      ],
+    );
+  }
+}
+
+class _StudentPinResetDialog extends StatefulWidget {
+  const _StudentPinResetDialog({required this.studentName});
+
+  final String studentName;
+
+  @override
+  State<_StudentPinResetDialog> createState() => _StudentPinResetDialogState();
+}
+
+class _StudentPinResetDialogState extends State<_StudentPinResetDialog> {
+  final _pinController = TextEditingController();
+  String? _errorText;
+
+  @override
+  void dispose() {
+    _pinController.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final pin = _pinController.text.trim();
+    if (!RegExp(r'^\d{6}$').hasMatch(pin)) {
+      setState(() => _errorText = '숫자 6자리를 입력해 주세요.');
+      return;
+    }
+    Navigator.of(context).pop(pin);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text('${widget.studentName} 비밀번호 리셋'),
+      content: SizedBox(
+        width: 280,
+        child: TextField(
+          controller: _pinController,
+          obscureText: true,
+          maxLength: 6,
+          keyboardType: TextInputType.number,
+          decoration: InputDecoration(
+            labelText: '새 출결 비밀번호',
+            errorText: _errorText,
+            border: const OutlineInputBorder(),
+          ),
+          onSubmitted: (_) => _submit(),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('취소'),
+        ),
+        FilledButton(onPressed: _submit, child: const Text('리셋')),
+      ],
     );
   }
 }
@@ -1475,6 +1804,14 @@ String _classKindLabel(String classKind) {
     'makeup' => '보강',
     'extra' => '추가',
     _ => '기본',
+  };
+}
+
+String _studentStatusLabel(String status) {
+  return switch (status) {
+    'paused' => '일시중지',
+    'left' => '퇴원',
+    _ => '재원',
   };
 }
 

@@ -97,6 +97,21 @@ async function routeEdgeRequest(
     }
   }
 
+  const studentMatch = path.match(/^\/students\/([^/]+)$/);
+  if (studentMatch) {
+    if (method === "PATCH") {
+      return await updateStudent(studentMatch[1], body, context);
+    }
+    if (method === "DELETE") {
+      return await leaveStudent(studentMatch[1], context);
+    }
+  }
+
+  const resetStudentPinMatch = path.match(/^\/students\/([^/]+)\/pin\/reset$/);
+  if (method === "POST" && resetStudentPinMatch) {
+    return await resetStudentPin(resetStudentPinMatch[1], body, context);
+  }
+
   const studyRoomClassesMatch = path.match(
     /^\/study-rooms\/([^/]+)\/classes$/,
   );
@@ -909,6 +924,134 @@ async function createStudent(
   };
 }
 
+async function updateStudent(
+  studentId: string,
+  body: Record<string, unknown>,
+  { db, teacher }: AppContext,
+): Promise<Record<string, unknown>> {
+  const activeTeacher = requireTeacherProfile(teacher);
+  assertUuid(studentId, "학생 정보가 올바르지 않습니다.");
+  const current = await readStudentForOwnerWrite(db, studentId, activeTeacher);
+
+  const name = stringValue(body.name);
+  const code = stringValue(body.code);
+  const status = normalizeStudentStatus(body.status);
+  if (name.length < 2) {
+    throw new EdgeApiError(400, "학생 이름을 입력해 주세요.");
+  }
+  if (code.length < 1) throw new EdgeApiError(400, "학생번호를 입력해 주세요.");
+
+  const { data: student, error } = await db
+    .from("students")
+    .update({
+      student_code: code,
+      name,
+      status,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", studentId)
+    .select("id, student_code, name, status, gender, age_group, avatar_key")
+    .single();
+
+  if (error) {
+    if (error.code === "23505") {
+      throw new EdgeApiError(409, "이미 사용 중인 학생번호입니다.");
+    }
+    throw new EdgeApiError(500, "학생 수정에 실패했습니다.");
+  }
+
+  await createStudentAuditLog(db, {
+    organizationId: current.organization_id,
+    studyRoomId: current.study_room_id,
+    actorTeacherId: activeTeacher.id,
+    studentId,
+    action: "updated",
+    title: "학생 정보 수정",
+    summary: `${student.name} 학생 정보를 수정했습니다.`,
+  });
+
+  return { ok: true, student: formatManagedStudent(student) };
+}
+
+async function resetStudentPin(
+  studentId: string,
+  body: Record<string, unknown>,
+  { db, teacher }: AppContext,
+): Promise<Record<string, unknown>> {
+  const activeTeacher = requireTeacherProfile(teacher);
+  assertUuid(studentId, "학생 정보가 올바르지 않습니다.");
+  const current = await readStudentForOwnerWrite(db, studentId, activeTeacher);
+
+  const pin = stringValue(body.pin);
+  if (!pinPattern.test(pin)) {
+    throw new EdgeApiError(400, "출결 비밀번호는 숫자 6자리여야 합니다.");
+  }
+
+  const { data: student, error } = await db
+    .from("students")
+    .update({
+      pin_hash: await hashStudentPin(db, pin),
+      pin_reset_required: false,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", studentId)
+    .select("id, student_code, name, status, gender, age_group, avatar_key")
+    .single();
+
+  if (error) throw new EdgeApiError(500, "출결 비밀번호 리셋에 실패했습니다.");
+
+  await createStudentAuditLog(db, {
+    organizationId: current.organization_id,
+    studyRoomId: current.study_room_id,
+    actorTeacherId: activeTeacher.id,
+    studentId,
+    action: "updated",
+    title: "출결 비밀번호 리셋",
+    summary: `${student.name} 학생의 출결 비밀번호를 리셋했습니다.`,
+  });
+
+  return { ok: true, student: formatManagedStudent(student) };
+}
+
+async function leaveStudent(
+  studentId: string,
+  { db, teacher }: AppContext,
+): Promise<Record<string, unknown>> {
+  const activeTeacher = requireTeacherProfile(teacher);
+  assertUuid(studentId, "학생 정보가 올바르지 않습니다.");
+  const current = await readStudentForOwnerWrite(db, studentId, activeTeacher);
+
+  const { data: student, error } = await db
+    .from("students")
+    .update({ status: "left", updated_at: new Date().toISOString() })
+    .eq("id", studentId)
+    .select("id, student_code, name, status, gender, age_group, avatar_key")
+    .single();
+
+  if (error) throw new EdgeApiError(500, "학생 삭제 처리에 실패했습니다.");
+
+  const { error: enrollmentError } = await db
+    .from("class_students")
+    .update({ active: false })
+    .eq("student_id", studentId);
+
+  if (enrollmentError) {
+    throw new EdgeApiError(500, "학생 수업 등록 해제에 실패했습니다.");
+  }
+
+  await createStudentAuditLog(db, {
+    organizationId: current.organization_id,
+    studyRoomId: current.study_room_id,
+    actorTeacherId: activeTeacher.id,
+    studentId,
+    action: "deleted",
+    title: "학생 삭제",
+    summary: `${student.name} 학생을 삭제 처리했습니다.`,
+  });
+
+  return { ok: true, student: formatManagedStudent(student) };
+}
+
 async function checkInStudent(
   classSessionId: string,
   body: Record<string, unknown>,
@@ -1071,6 +1214,28 @@ async function readStudent(
   if (error) throw new EdgeApiError(500, "학생 조회에 실패했습니다.");
   if (!data) {
     throw new EdgeApiError(404, "출석 가능한 학생을 찾을 수 없습니다.");
+  }
+  return data;
+}
+
+async function readStudentForOwnerWrite(
+  db: SupabaseClient,
+  studentId: string,
+  teacher: TeacherContext,
+) {
+  const { data, error } = await db
+    .from("students")
+    .select(
+      "id, organization_id, study_room_id, name, study_rooms!inner(owner_teacher_id)",
+    )
+    .eq("id", studentId)
+    .maybeSingle();
+
+  if (error) throw new EdgeApiError(500, "학생 조회에 실패했습니다.");
+  if (!data) throw new EdgeApiError(404, "학생을 찾을 수 없습니다.");
+  const studyRoom = normalizeJoinedObject(data.study_rooms);
+  if (studyRoom.owner_teacher_id !== teacher.id) {
+    throw new EdgeApiError(403, "해당 학생을 수정할 수 없습니다.");
   }
   return data;
 }
@@ -1267,6 +1432,7 @@ async function createStudentAuditLog(
     studyRoomId: string;
     actorTeacherId: string;
     studentId: string;
+    action?: "created" | "updated" | "deleted";
     title: string;
     summary: string;
   },
@@ -1278,7 +1444,7 @@ async function createStudentAuditLog(
     student_id: input.studentId,
     entity_type: "student",
     entity_id: input.studentId,
-    action: "created",
+    action: input.action ?? "created",
     title: input.title,
     summary: input.summary,
   });
@@ -1525,6 +1691,14 @@ function normalizeLimit(value: unknown, fallback: number, maximum: number) {
   return Math.min(limit, maximum);
 }
 
+function normalizeStudentStatus(value: unknown) {
+  const status = stringValue(value) || "active";
+  if (!["active", "paused", "left"].includes(status)) {
+    throw new EdgeApiError(400, "학생 상태가 올바르지 않습니다.");
+  }
+  return status;
+}
+
 function normalizeTime(value: unknown, message: string) {
   const time = stringValue(value);
   if (!/^\d{2}:\d{2}$/.test(time)) throw new EdgeApiError(400, message);
@@ -1550,6 +1724,18 @@ function formatClassSummary(classRoom: Record<string, unknown>) {
       startsAt: trimSeconds((schedule as Record<string, unknown>).starts_at),
       endsAt: trimSeconds((schedule as Record<string, unknown>).ends_at),
     })),
+  };
+}
+
+function formatManagedStudent(student: Record<string, unknown>) {
+  return {
+    id: student.id,
+    code: student.student_code,
+    name: student.name,
+    status: student.status,
+    gender: student.gender,
+    ageGroup: student.age_group,
+    avatarKey: student.avatar_key,
   };
 }
 
