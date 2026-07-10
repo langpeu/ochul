@@ -26,7 +26,24 @@ Flutter 앱은 Supabase DB를 직접 호출하지 않는다.
 
 ## Edge Function 그룹
 
-Edge Function 이름은 REST 스타일로 간결하고 명확하게 둔다.
+Flutter 앱은 Supabase Edge Function `edge-api`만 호출한다.
+
+`edge-api` 요청 body는 다음 형태로 고정한다.
+
+```json
+{
+  "method": "POST",
+  "path": "/class-sessions/{classSessionId}/check-in",
+  "body": {
+    "studentId": "{studentId}",
+    "pin": "123456"
+  }
+}
+```
+
+`edge-api` 내부 라우터는 `method + path`를 REST 리소스처럼 해석한다. 실제 DB 테이블명, 컬럼명, RLS 보조 검증, 카카오 발송 로그 생성은 Edge Function 내부 구현에만 둔다.
+
+Edge API 경로는 REST 스타일로 간결하고 명확하게 둔다.
 
 ### auth/profile
 
@@ -120,6 +137,10 @@ Edge Function 이름은 REST 스타일로 간결하고 명확하게 둔다.
 - 필요한 경우 `audit_logs` 기록
 - 필요한 경우 `notification_logs` 기록
 - 앱에 필요한 형태로 응답 변환
+
+데이터를 변경하는 요청은 기본적으로 공부방 소유 선생님만 허용한다. MVP의 `admin` role은 관리자 조회 화면을 위한 권한이며, 출석 체크나 수정 요청에는 자동으로 쓰기 권한을 부여하지 않는다.
+
+학생 출결 비밀번호 검증은 Edge Function에서 DB 함수 `verify_student_pin(target_student_id, plain_pin)`을 호출해 처리한다. Flutter 앱에는 비밀번호 해시나 검증 로직을 노출하지 않는다.
 
 ## 응답 원칙
 

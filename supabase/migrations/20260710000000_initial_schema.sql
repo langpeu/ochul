@@ -499,6 +499,31 @@ as $$
   )
 $$;
 
+create or replace function public.verify_student_pin(
+  target_student_id uuid,
+  plain_pin text
+)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1
+    from public.students s
+    where s.id = target_student_id
+      and plain_pin ~ '^[0-9]{6}$'
+      and s.pin_hash = crypt(plain_pin, s.pin_hash)
+  )
+$$;
+
+revoke execute on function public.verify_student_pin(uuid, text)
+from public, anon, authenticated;
+
+grant execute on function public.verify_student_pin(uuid, text)
+to service_role;
+
 create policy "teachers can read own profile"
 on teachers for select
 using (auth_user_id = auth.uid());
