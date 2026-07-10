@@ -100,6 +100,8 @@ Edge API 경로는 REST 스타일로 간결하고 명확하게 둔다.
   - Body: `{ "assignments": [{ "seatId": "...", "studentId": "..." }] }`
   - 해당 수업에 등록된 학생만 배정할 수 있고, 좌석/학생 중복 배정은 거부한다.
 - `POST /classes/{classId}/classroom-layout/copy`: 기본 수업 배치도를 보강 수업으로 복사
+  - Body: `{ "sourceClassId": "..." }`
+  - 대상 수업의 기존 활성 배치는 비활성화하고, 원본 좌석과 대상 수업에도 등록된 학생의 좌석 배정만 복사한다.
 
 ### enrollments
 

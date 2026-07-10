@@ -54,6 +54,22 @@ class ClassroomLayoutService {
     }
     throw const ClassroomLayoutException('좌석 배정 저장 응답이 올바르지 않습니다.');
   }
+
+  Future<ClassroomLayout> copyLayout({
+    required String targetClassId,
+    required String sourceClassId,
+  }) async {
+    final data = await edgeClient.call(
+      '/classes/$targetClassId/classroom-layout/copy',
+      method: EdgeHttpMethod.post,
+      body: <String, dynamic>{'sourceClassId': sourceClassId},
+    );
+    final layoutJson = data['layout'];
+    if (layoutJson is Map<String, dynamic>) {
+      return ClassroomLayout.fromJson(layoutJson);
+    }
+    throw const ClassroomLayoutException('교실 배치 복사 응답이 올바르지 않습니다.');
+  }
 }
 
 class ClassroomLayout {

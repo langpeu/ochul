@@ -2623,6 +2623,48 @@ class _ClassroomLayoutPanelState extends State<_ClassroomLayoutPanel> {
     }
   }
 
+  Future<void> _copyLayoutFromClass(_ClassroomLayoutData data) async {
+    final targetClassId = _selectedClassId;
+    if (targetClassId == null) return;
+    final candidates = data.classes
+        .where((classRoom) => classRoom.id != targetClassId)
+        .toList(growable: false);
+    if (candidates.isEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('복사할 다른 수업이 없습니다.')));
+      return;
+    }
+
+    final sourceClassId = await showDialog<String>(
+      context: context,
+      builder: (context) => _CopyLayoutDialog(classes: candidates),
+    );
+    if (sourceClassId == null) return;
+
+    setState(() => _saving = true);
+    try {
+      await widget.layoutService.copyLayout(
+        targetClassId: targetClassId,
+        sourceClassId: sourceClassId,
+      );
+      if (mounted) {
+        setState(() => _dataFuture = _loadData());
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('교실 배치를 복사했습니다.')));
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('교실 배치 복사에 실패했습니다.')));
+      }
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Card(
@@ -2707,6 +2749,13 @@ class _ClassroomLayoutPanelState extends State<_ClassroomLayoutPanel> {
                                 : () => _createDefaultSeats(data),
                             icon: const Icon(Icons.grid_view_outlined),
                             label: const Text('기본 6석'),
+                          ),
+                          OutlinedButton.icon(
+                            onPressed: _saving || data.classes.length < 2
+                                ? null
+                                : () => _copyLayoutFromClass(data),
+                            icon: const Icon(Icons.copy_all_outlined),
+                            label: const Text('다른 수업에서 복사'),
                           ),
                         ],
                       ),
@@ -2867,6 +2916,49 @@ class _ClassroomLayoutData {
   final List<ManagedClass> classes;
   final List<ManagedStudent> enrolled;
   final ClassroomLayout? layout;
+}
+
+class _CopyLayoutDialog extends StatelessWidget {
+  const _CopyLayoutDialog({required this.classes});
+
+  final List<ManagedClass> classes;
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('교실 배치 복사'),
+      content: SizedBox(
+        width: 420,
+        child: ListView.separated(
+          shrinkWrap: true,
+          itemBuilder: (context, index) {
+            final classRoom = classes[index];
+            return ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(
+                classRoom.classKind == 'makeup'
+                    ? Icons.event_repeat
+                    : Icons.school_outlined,
+              ),
+              title: Text(classRoom.name),
+              subtitle: Text(
+                '${_classKindLabel(classRoom.classKind)} · ${classRoom.scheduleText}',
+              ),
+              onTap: () => Navigator.of(context).pop(classRoom.id),
+            );
+          },
+          separatorBuilder: (_, _) => const Divider(height: 1),
+          itemCount: classes.length,
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('취소'),
+        ),
+      ],
+    );
+  }
 }
 
 class _AdminDashboardPanel extends StatefulWidget {

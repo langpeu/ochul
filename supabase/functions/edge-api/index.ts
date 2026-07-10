@@ -252,6 +252,17 @@ async function routeEdgeRequest(
     return await saveSeatAssignments(seatAssignmentsMatch[1], body, context);
   }
 
+  const copyClassroomLayoutMatch = path.match(
+    /^\/classes\/([^/]+)\/classroom-layout\/copy$/,
+  );
+  if (method === "POST" && copyClassroomLayoutMatch) {
+    return await copyClassroomLayout(
+      copyClassroomLayoutMatch[1],
+      body,
+      context,
+    );
+  }
+
   const studyRoomAuditLogsMatch = path.match(
     /^\/study-rooms\/([^/]+)\/audit-logs$/,
   );
@@ -1236,6 +1247,115 @@ async function saveSeatAssignments(
   return {
     ok: true,
     layout: await formatClassroomLayout(db, layout, classRoom),
+  };
+}
+
+async function copyClassroomLayout(
+  targetClassId: string,
+  body: Record<string, unknown>,
+  { db, teacher }: AppContext,
+): Promise<Record<string, unknown>> {
+  const activeTeacher = requireTeacherProfile(teacher);
+  const sourceClassId = stringValue(body.sourceClassId);
+  assertUuid(targetClassId, "대상 수업 정보가 올바르지 않습니다.");
+  assertUuid(sourceClassId, "원본 수업 정보가 올바르지 않습니다.");
+  if (sourceClassId === targetClassId) {
+    throw new EdgeApiError(400, "같은 수업으로는 배치를 복사할 수 없습니다.");
+  }
+
+  const targetClass = await readAccessibleClass(
+    db,
+    targetClassId,
+    activeTeacher,
+    { allowAdmin: false },
+  );
+  const sourceClass = await readAccessibleClass(
+    db,
+    sourceClassId,
+    activeTeacher,
+    { allowAdmin: false },
+  );
+  if (sourceClass.study_room_id !== targetClass.study_room_id) {
+    throw new EdgeApiError(
+      400,
+      "같은 공부방 수업끼리만 배치를 복사할 수 있습니다.",
+    );
+  }
+
+  const sourceLayout = await readActiveClassroomLayout(db, sourceClassId);
+  if (!sourceLayout) {
+    throw new EdgeApiError(400, "원본 수업에 복사할 교실 배치가 없습니다.");
+  }
+
+  await deactivateActiveClassroomLayouts(db, targetClassId);
+
+  const layout = await createClassroomLayoutRow(db, targetClass, {
+    name: `${sourceLayout.name} 복사`,
+    canvasWidth: Number(sourceLayout.canvas_width ?? 1000),
+    canvasHeight: Number(sourceLayout.canvas_height ?? 700),
+    teacherId: activeTeacher.id,
+  });
+
+  const { data: sourceSeats, error: sourceSeatsError } = await db
+    .from("classroom_seats")
+    .select(
+      "id, label, desk_x, desk_y, seat_x, seat_y, rotation_degrees, display_order",
+    )
+    .eq("classroom_layout_id", sourceLayout.id)
+    .eq("active", true)
+    .order("display_order", { ascending: true });
+  if (sourceSeatsError) {
+    throw new EdgeApiError(500, "원본 좌석 조회에 실패했습니다.");
+  }
+
+  const seatIdBySourceId = new Map<string, string>();
+  for (const seat of sourceSeats ?? []) {
+    const { data: copiedSeat, error: copiedSeatError } = await db
+      .from("classroom_seats")
+      .insert({
+        organization_id: targetClass.organization_id,
+        study_room_id: targetClass.study_room_id,
+        classroom_layout_id: layout.id,
+        label: seat.label,
+        desk_x: seat.desk_x,
+        desk_y: seat.desk_y,
+        seat_x: seat.seat_x,
+        seat_y: seat.seat_y,
+        rotation_degrees: seat.rotation_degrees,
+        display_order: seat.display_order,
+        active: true,
+      })
+      .select("id")
+      .single();
+    if (copiedSeatError) {
+      throw new EdgeApiError(500, "좌석 복사에 실패했습니다.");
+    }
+    seatIdBySourceId.set(String(seat.id), String(copiedSeat.id));
+  }
+
+  const copiedAssignments = await copyEligibleSeatAssignments(db, {
+    sourceLayoutId: String(sourceLayout.id),
+    targetLayoutId: String(layout.id),
+    targetClassId,
+    seatIdBySourceId,
+    teacherId: activeTeacher.id,
+  });
+
+  await createClassroomLayoutAuditLog(db, {
+    organizationId: targetClass.organization_id,
+    studyRoomId: targetClass.study_room_id,
+    actorTeacherId: activeTeacher.id,
+    classId: targetClassId,
+    classroomLayoutId: layout.id,
+    action: "copied",
+    title: "교실 배치 복사",
+    summary:
+      `${sourceClass.name} 수업의 좌석 ${seatIdBySourceId.size}개와 배정 ${copiedAssignments}건을 ${targetClass.name} 수업으로 복사했습니다.`,
+  });
+
+  return {
+    ok: true,
+    layout: await formatClassroomLayout(db, layout, targetClass),
   };
 }
 
@@ -3337,6 +3457,18 @@ async function readActiveClassroomLayout(
   return data;
 }
 
+async function deactivateActiveClassroomLayouts(
+  db: SupabaseClient,
+  classId: string,
+) {
+  const { error } = await db
+    .from("classroom_layouts")
+    .update({ active: false })
+    .eq("class_id", classId)
+    .eq("active", true);
+  if (error) throw new EdgeApiError(500, "기존 교실 배치 정리에 실패했습니다.");
+}
+
 async function createClassroomLayoutRow(
   db: SupabaseClient,
   classRoom: Record<string, unknown>,
@@ -3520,6 +3652,64 @@ async function assertSeatCheckInScope(
   if (occupiedSeat && occupiedSeat.student_id !== input.studentId) {
     throw new EdgeApiError(409, "이미 사용 중인 좌석입니다.");
   }
+}
+
+async function copyEligibleSeatAssignments(
+  db: SupabaseClient,
+  input: {
+    sourceLayoutId: string;
+    targetLayoutId: string;
+    targetClassId: string;
+    seatIdBySourceId: Map<string, string>;
+    teacherId: string;
+  },
+) {
+  const { data: targetStudents, error: targetStudentsError } = await db
+    .from("class_students")
+    .select("student_id")
+    .eq("class_id", input.targetClassId)
+    .eq("active", true);
+  if (targetStudentsError) {
+    throw new EdgeApiError(500, "대상 수업 학생 조회에 실패했습니다.");
+  }
+  const targetStudentIds = new Set(
+    (targetStudents ?? []).map((row) => String(row.student_id)),
+  );
+  if (targetStudentIds.size === 0) return 0;
+
+  const { data: assignments, error: assignmentsError } = await db
+    .from("student_seat_assignments")
+    .select("classroom_seat_id, student_id")
+    .eq("classroom_layout_id", input.sourceLayoutId)
+    .eq("active", true);
+  if (assignmentsError) {
+    throw new EdgeApiError(500, "원본 좌석 배정 조회에 실패했습니다.");
+  }
+
+  const nextAssignments = [];
+  for (const assignment of assignments ?? []) {
+    const studentId = String(assignment.student_id);
+    const sourceSeatId = String(assignment.classroom_seat_id);
+    const targetSeatId = input.seatIdBySourceId.get(sourceSeatId);
+    if (!targetSeatId || !targetStudentIds.has(studentId)) continue;
+    nextAssignments.push({
+      classroom_layout_id: input.targetLayoutId,
+      classroom_seat_id: targetSeatId,
+      student_id: studentId,
+      assigned_by_teacher_id: input.teacherId,
+      active: true,
+    });
+  }
+
+  if (nextAssignments.length === 0) return 0;
+
+  const { error: insertError } = await db
+    .from("student_seat_assignments")
+    .insert(nextAssignments);
+  if (insertError) {
+    throw new EdgeApiError(500, "좌석 배정 복사에 실패했습니다.");
+  }
+  return nextAssignments.length;
 }
 
 async function assertSeatAssignmentScope(
@@ -4358,7 +4548,7 @@ async function createClassroomLayoutAuditLog(
     actorTeacherId: string;
     classId: string;
     classroomLayoutId: string;
-    action: "created" | "updated" | "assigned";
+    action: "created" | "updated" | "assigned" | "copied";
     title: string;
     summary: string;
   },
