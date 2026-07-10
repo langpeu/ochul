@@ -85,10 +85,14 @@ Edge API 경로는 REST 스타일로 간결하고 명확하게 둔다.
 - `DELETE /classes/{classId}`: 수업 삭제 또는 비활성화
 - `POST /classes/{classId}/sessions`: 수업 회차 생성
 - `POST /classes/{classId}/sessions/open`: 오늘 출석용 수업 회차 열기
-- `PATCH /classes/{classId}/sessions/today`: 오늘 수업 시간 변경과 보호자 카카오 안내 요청
+- `PATCH /classes/{classId}/sessions/today`: 특정 수업 회차 시간 변경과 보호자 카카오 안내 요청
+  - Body: `{ "sessionDate": "2026-07-31", "startsAt": "15:00", "endsAt": "16:00", "reason": "선택" }`
 - `PATCH /class-sessions/{classSessionId}`: 수업 회차 수정
-- `POST /classes/{classId}/sessions/cancel-today`: 오늘 수업 휴강 처리와 보호자 카카오 안내 요청
+- `POST /classes/{classId}/sessions/cancel-today`: 특정 수업 회차 휴강 처리와 보호자 카카오 안내 요청
+  - Body: `{ "sessionDate": "2026-07-31", "reason": "선택" }`
 - `POST /classes/{classId}/sessions/makeup`: 보강 수업 생성과 보호자 카카오 안내 요청
+  - Body: `{ "sessionDate": "2026-08-02", "startsAt": "15:00", "endsAt": "16:00", "reason": "선택", "originalSessionDate": "선택" }`
+  - `originalSessionDate`를 입력하면 해당 날짜의 휴강 회차와 보강 회차를 연결한다.
 
 ### classroom-layouts
 

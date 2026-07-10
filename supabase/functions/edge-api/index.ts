@@ -1572,7 +1572,8 @@ async function cancelTodayClassSession(
     allowAdmin: false,
   });
   const reason = nullableString(body.reason);
-  const sessionDate = todayDateString();
+  const sessionDate = stringValue(body.sessionDate) || todayDateString();
+  assertDate(sessionDate, "휴강 날짜가 올바르지 않습니다.");
   const session = await ensureClassSessionForDate(db, classRoom, sessionDate, {
     status: "cancelled",
     reason,
@@ -1627,7 +1628,7 @@ async function cancelTodayClassSession(
     classSessionId: updatedSession.id,
     action: "status_changed",
     title: "수업 휴강",
-    summary: `${classRoom.name} 수업을 휴강 처리했습니다.`,
+    summary: `${classRoom.name} 수업을 ${sessionDate} 휴강 처리했습니다.`,
   });
 
   return {
@@ -1656,7 +1657,8 @@ async function rescheduleTodayClassSession(
     throw new EdgeApiError(400, "변경 종료 시간은 시작 시간 이후여야 합니다.");
   }
   const reason = nullableString(body.reason);
-  const sessionDate = todayDateString();
+  const sessionDate = stringValue(body.sessionDate) || todayDateString();
+  assertDate(sessionDate, "변경 날짜가 올바르지 않습니다.");
   const session = await ensureClassSessionForDate(db, classRoom, sessionDate, {
     status: "scheduled",
     reason,
@@ -1722,7 +1724,7 @@ async function rescheduleTodayClassSession(
     classSessionId: updatedSession.id,
     action: "status_changed",
     title: "수업 시간 변경",
-    summary: `${classRoom.name} 수업 시간을 변경했습니다.`,
+    summary: `${classRoom.name} ${sessionDate} 수업 시간을 변경했습니다.`,
   });
 
   return {
@@ -1750,9 +1752,22 @@ async function createMakeupClassSession(
   );
   const endsAt = normalizeTime(body.endsAt, "보강 종료 시간을 입력해 주세요.");
   const reason = nullableString(body.reason);
+  const originalSessionDate = nullableString(body.originalSessionDate);
   assertDate(sessionDate, "보강 날짜가 올바르지 않습니다.");
+  if (originalSessionDate) {
+    assertDate(originalSessionDate, "연결할 휴강 날짜가 올바르지 않습니다.");
+  }
   if (startsAt >= endsAt) {
     throw new EdgeApiError(400, "보강 종료 시간은 시작 시간 이후여야 합니다.");
+  }
+  const originalSession = originalSessionDate
+    ? await readClassSessionForDate(db, classId, originalSessionDate)
+    : null;
+  if (originalSession && originalSession.status !== "cancelled") {
+    throw new EdgeApiError(
+      400,
+      "휴강 처리된 회차만 보강과 연결할 수 있습니다.",
+    );
   }
 
   const { data: session, error } = await db
@@ -1761,6 +1776,7 @@ async function createMakeupClassSession(
       organization_id: classRoom.organization_id,
       study_room_id: classRoom.study_room_id,
       class_id: classId,
+      original_class_session_id: originalSession?.id ?? null,
       session_date: sessionDate,
       starts_at: toKstIso(sessionDate, startsAt),
       ends_at: toKstIso(sessionDate, endsAt),
@@ -1777,12 +1793,25 @@ async function createMakeupClassSession(
   await createClassSessionChange(db, {
     organizationId: classRoom.organization_id,
     studyRoomId: classRoom.study_room_id,
-    classSessionId: session.id,
+    classSessionId: originalSession?.id ?? session.id,
+    relatedClassSessionId: originalSession ? session.id : undefined,
     changeType: "makeup_added",
     reason,
     teacherId: activeTeacher.id,
-    beforeValue: null,
-    afterValue: { sessionDate, startsAt, endsAt },
+    beforeValue: originalSession
+      ? {
+        sessionDate: originalSession.session_date,
+        startsAt: originalSession.starts_at,
+        endsAt: originalSession.ends_at,
+        status: originalSession.status,
+      }
+      : null,
+    afterValue: {
+      sessionDate,
+      startsAt,
+      endsAt,
+      originalSessionId: originalSession?.id ?? null,
+    },
   });
 
   const notifications = await createClassChangeNotificationLogs(db, {
@@ -1807,7 +1836,9 @@ async function createMakeupClassSession(
     classSessionId: session.id,
     action: "created",
     title: "보강 수업 생성",
-    summary: `${classRoom.name} 보강 수업을 생성했습니다.`,
+    summary: originalSession
+      ? `${classRoom.name} ${originalSessionDate} 휴강의 보강 수업을 생성했습니다.`
+      : `${classRoom.name} 보강 수업을 생성했습니다.`,
   });
 
   return {
@@ -3358,6 +3389,25 @@ async function readClassSession(db: SupabaseClient, classSessionId: string) {
 
   if (error) throw new EdgeApiError(500, "수업 회차 조회에 실패했습니다.");
   if (!data) throw new EdgeApiError(404, "수업 회차를 찾을 수 없습니다.");
+  return data;
+}
+
+async function readClassSessionForDate(
+  db: SupabaseClient,
+  classId: string,
+  sessionDate: string,
+) {
+  const { data, error } = await db
+    .from("class_sessions")
+    .select("id, session_date, starts_at, ends_at, status")
+    .eq("class_id", classId)
+    .eq("session_date", sessionDate)
+    .maybeSingle();
+
+  if (error) throw new EdgeApiError(500, "수업 회차 조회에 실패했습니다.");
+  if (!data) {
+    throw new EdgeApiError(404, "연결할 휴강 회차를 찾을 수 없습니다.");
+  }
   return data;
 }
 

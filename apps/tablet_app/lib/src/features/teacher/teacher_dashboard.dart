@@ -1191,20 +1191,18 @@ class _ClassManagementPanelState extends State<_ClassManagementPanel> {
   }
 
   Future<void> _cancelToday(ManagedClass classRoom) async {
-    final reason = await showDialog<String>(
+    final result = await showDialog<_ClassCancelResult>(
       context: context,
-      builder: (context) => _ClassChangeReasonDialog(
-        title: '${classRoom.name} 휴강',
-        labelText: '휴강 사유',
-      ),
+      builder: (context) => _ClassCancelDialog(className: classRoom.name),
     );
-    if (reason == null) return;
+    if (result == null) return;
 
     setState(() => _processingClassId = classRoom.id);
     try {
       final count = await widget.service.cancelTodaySession(
         classId: classRoom.id,
-        reason: reason,
+        sessionDate: result.sessionDate,
+        reason: result.reason,
       );
       if (mounted) {
         ScaffoldMessenger.of(
@@ -1237,6 +1235,7 @@ class _ClassManagementPanelState extends State<_ClassManagementPanel> {
         startsAt: result.startsAt,
         endsAt: result.endsAt,
         reason: result.reason,
+        originalSessionDate: result.originalSessionDate,
       );
       if (mounted) {
         ScaffoldMessenger.of(
@@ -1265,6 +1264,7 @@ class _ClassManagementPanelState extends State<_ClassManagementPanel> {
     try {
       final count = await widget.service.rescheduleTodaySession(
         classId: classRoom.id,
+        sessionDate: result.sessionDate,
         startsAt: result.startsAt,
         endsAt: result.endsAt,
         reason: result.reason,
@@ -1559,7 +1559,7 @@ class _ClassManagementPanelState extends State<_ClassManagementPanel> {
                                     value: _ClassAction.cancelToday,
                                     child: ListTile(
                                       leading: Icon(Icons.event_busy_outlined),
-                                      title: Text('오늘 휴강'),
+                                      title: Text('회차 휴강'),
                                     ),
                                   ),
                                   PopupMenuItem(
@@ -1573,7 +1573,7 @@ class _ClassManagementPanelState extends State<_ClassManagementPanel> {
                                     value: _ClassAction.rescheduleToday,
                                     child: ListTile(
                                       leading: Icon(Icons.update),
-                                      title: Text('오늘 시간 변경'),
+                                      title: Text('회차 시간 변경'),
                                     ),
                                   ),
                                   PopupMenuDivider(),
@@ -1848,46 +1848,77 @@ class _ClassEditDialogState extends State<_ClassEditDialog> {
   }
 }
 
-class _ClassChangeReasonDialog extends StatefulWidget {
-  const _ClassChangeReasonDialog({
-    required this.title,
-    required this.labelText,
-  });
+class _ClassCancelResult {
+  const _ClassCancelResult({required this.sessionDate, required this.reason});
 
-  final String title;
-  final String labelText;
-
-  @override
-  State<_ClassChangeReasonDialog> createState() =>
-      _ClassChangeReasonDialogState();
+  final String sessionDate;
+  final String reason;
 }
 
-class _ClassChangeReasonDialogState extends State<_ClassChangeReasonDialog> {
+class _ClassCancelDialog extends StatefulWidget {
+  const _ClassCancelDialog({required this.className});
+
+  final String className;
+
+  @override
+  State<_ClassCancelDialog> createState() => _ClassCancelDialogState();
+}
+
+class _ClassCancelDialogState extends State<_ClassCancelDialog> {
+  final _dateController = TextEditingController();
   final _reasonController = TextEditingController();
+  String? _errorText;
 
   @override
   void dispose() {
+    _dateController.dispose();
     _reasonController.dispose();
     super.dispose();
   }
 
   void _submit() {
-    Navigator.of(context).pop(_reasonController.text.trim());
+    final sessionDate = _dateController.text.trim();
+    if (!_datePattern.hasMatch(sessionDate)) {
+      setState(() => _errorText = '휴강 날짜를 확인해 주세요.');
+      return;
+    }
+    Navigator.of(context).pop(
+      _ClassCancelResult(
+        sessionDate: sessionDate,
+        reason: _reasonController.text.trim(),
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: Text(widget.title),
+      title: Text('${widget.className} 휴강'),
       content: SizedBox(
-        width: 320,
-        child: TextField(
-          controller: _reasonController,
-          decoration: InputDecoration(
-            labelText: widget.labelText,
-            border: const OutlineInputBorder(),
-          ),
-          onSubmitted: (_) => _submit(),
+        width: 360,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: _dateController,
+              decoration: InputDecoration(
+                labelText: '휴강일',
+                hintText: '2026-07-31',
+                errorText: _errorText,
+                border: const OutlineInputBorder(),
+              ),
+              onSubmitted: (_) => _submit(),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _reasonController,
+              decoration: const InputDecoration(
+                labelText: '휴강 사유',
+                border: OutlineInputBorder(),
+              ),
+              onSubmitted: (_) => _submit(),
+            ),
+          ],
         ),
       ),
       actions: [
@@ -1907,21 +1938,25 @@ class _MakeupSessionResult {
     required this.startsAt,
     required this.endsAt,
     required this.reason,
+    required this.originalSessionDate,
   });
 
   final String sessionDate;
   final String startsAt;
   final String endsAt;
   final String reason;
+  final String originalSessionDate;
 }
 
 class _ClassTimeChangeResult {
   const _ClassTimeChangeResult({
+    required this.sessionDate,
     required this.startsAt,
     required this.endsAt,
     required this.reason,
   });
 
+  final String sessionDate;
   final String startsAt;
   final String endsAt;
   final String reason;
@@ -1937,6 +1972,7 @@ class _ClassTimeChangeDialog extends StatefulWidget {
 }
 
 class _ClassTimeChangeDialogState extends State<_ClassTimeChangeDialog> {
+  final _dateController = TextEditingController();
   final _startsAtController = TextEditingController(text: '15:00');
   final _endsAtController = TextEditingController(text: '16:00');
   final _reasonController = TextEditingController();
@@ -1944,6 +1980,7 @@ class _ClassTimeChangeDialogState extends State<_ClassTimeChangeDialog> {
 
   @override
   void dispose() {
+    _dateController.dispose();
     _startsAtController.dispose();
     _endsAtController.dispose();
     _reasonController.dispose();
@@ -1951,16 +1988,19 @@ class _ClassTimeChangeDialogState extends State<_ClassTimeChangeDialog> {
   }
 
   void _submit() {
+    final sessionDate = _dateController.text.trim();
     final startsAt = _startsAtController.text.trim();
     final endsAt = _endsAtController.text.trim();
-    if (!_timePattern.hasMatch(startsAt) ||
+    if (!_datePattern.hasMatch(sessionDate) ||
+        !_timePattern.hasMatch(startsAt) ||
         !_timePattern.hasMatch(endsAt) ||
         startsAt.compareTo(endsAt) >= 0) {
-      setState(() => _errorText = '시간을 확인해 주세요.');
+      setState(() => _errorText = '날짜와 시간을 확인해 주세요.');
       return;
     }
     Navigator.of(context).pop(
       _ClassTimeChangeResult(
+        sessionDate: sessionDate,
         startsAt: startsAt,
         endsAt: endsAt,
         reason: _reasonController.text.trim(),
@@ -1971,12 +2011,21 @@ class _ClassTimeChangeDialogState extends State<_ClassTimeChangeDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: Text('${widget.className} 오늘 시간 변경'),
+      title: Text('${widget.className} 시간 변경'),
       content: SizedBox(
         width: 360,
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            TextField(
+              controller: _dateController,
+              decoration: const InputDecoration(
+                labelText: '변경일',
+                hintText: '2026-07-31',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
             Row(
               children: [
                 Expanded(
@@ -2034,6 +2083,7 @@ class _MakeupSessionDialog extends StatefulWidget {
 
 class _MakeupSessionDialogState extends State<_MakeupSessionDialog> {
   final _dateController = TextEditingController();
+  final _originalDateController = TextEditingController();
   final _startsAtController = TextEditingController(text: '15:00');
   final _endsAtController = TextEditingController(text: '16:00');
   final _reasonController = TextEditingController();
@@ -2042,6 +2092,7 @@ class _MakeupSessionDialogState extends State<_MakeupSessionDialog> {
   @override
   void dispose() {
     _dateController.dispose();
+    _originalDateController.dispose();
     _startsAtController.dispose();
     _endsAtController.dispose();
     _reasonController.dispose();
@@ -2050,9 +2101,11 @@ class _MakeupSessionDialogState extends State<_MakeupSessionDialog> {
 
   void _submit() {
     final date = _dateController.text.trim();
+    final originalDate = _originalDateController.text.trim();
     final startsAt = _startsAtController.text.trim();
     final endsAt = _endsAtController.text.trim();
     if (!_datePattern.hasMatch(date) ||
+        (originalDate.isNotEmpty && !_datePattern.hasMatch(originalDate)) ||
         !_timePattern.hasMatch(startsAt) ||
         !_timePattern.hasMatch(endsAt) ||
         startsAt.compareTo(endsAt) >= 0) {
@@ -2065,6 +2118,7 @@ class _MakeupSessionDialogState extends State<_MakeupSessionDialog> {
         startsAt: startsAt,
         endsAt: endsAt,
         reason: _reasonController.text.trim(),
+        originalSessionDate: originalDate,
       ),
     );
   }
@@ -2078,6 +2132,16 @@ class _MakeupSessionDialogState extends State<_MakeupSessionDialog> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            TextField(
+              controller: _originalDateController,
+              decoration: InputDecoration(
+                labelText: '연결할 휴강일',
+                hintText: '선택 · 2026-07-24',
+                errorText: _errorText,
+                border: const OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
             TextField(
               controller: _dateController,
               decoration: const InputDecoration(

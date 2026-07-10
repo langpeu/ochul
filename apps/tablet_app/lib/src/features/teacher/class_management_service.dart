@@ -92,12 +92,13 @@ class ClassManagementService {
 
   Future<int> cancelTodaySession({
     required String classId,
+    required String sessionDate,
     required String reason,
   }) async {
     final data = await edgeClient.call(
       '/classes/$classId/sessions/cancel-today',
       method: EdgeHttpMethod.post,
-      body: <String, dynamic>{'reason': reason},
+      body: <String, dynamic>{'sessionDate': sessionDate, 'reason': reason},
     );
     return _readRequestedNotificationCount(data);
   }
@@ -108,6 +109,7 @@ class ClassManagementService {
     required String startsAt,
     required String endsAt,
     required String reason,
+    required String originalSessionDate,
   }) async {
     final data = await edgeClient.call(
       '/classes/$classId/sessions/makeup',
@@ -117,6 +119,8 @@ class ClassManagementService {
         'startsAt': startsAt,
         'endsAt': endsAt,
         'reason': reason,
+        if (originalSessionDate.isNotEmpty)
+          'originalSessionDate': originalSessionDate,
       },
     );
     return _readRequestedNotificationCount(data);
@@ -124,6 +128,7 @@ class ClassManagementService {
 
   Future<int> rescheduleTodaySession({
     required String classId,
+    required String sessionDate,
     required String startsAt,
     required String endsAt,
     required String reason,
@@ -132,6 +137,7 @@ class ClassManagementService {
       '/classes/$classId/sessions/today',
       method: EdgeHttpMethod.patch,
       body: <String, dynamic>{
+        'sessionDate': sessionDate,
         'startsAt': startsAt,
         'endsAt': endsAt,
         'reason': reason,
