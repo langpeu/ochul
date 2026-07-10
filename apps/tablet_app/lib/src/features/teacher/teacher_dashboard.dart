@@ -5351,6 +5351,10 @@ class _PaymentManagementPanelState extends State<_PaymentManagementPanel> {
                                                 value: 'exempt',
                                                 child: Text('면제'),
                                               ),
+                                              PopupMenuItem(
+                                                value: 'refunded',
+                                                child: Text('환불'),
+                                              ),
                                             ],
                                           ),
                                   );
