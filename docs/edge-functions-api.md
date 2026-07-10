@@ -70,7 +70,7 @@ Edge API 경로는 REST 스타일로 간결하고 명확하게 둔다.
 ### classes
 
 - `GET /study-rooms/{studyRoomId}/classes`: 수업 목록
-- `POST /study-rooms/{studyRoomId}/classes`: 수업 생성
+- `POST /study-rooms/{studyRoomId}/classes`: 수업 생성, 기간/요일/시간 규칙 저장
 - `GET /classes/{classId}`: 수업 상세
 - `PATCH /classes/{classId}`: 수업 수정
 - `DELETE /classes/{classId}`: 수업 삭제 또는 비활성화

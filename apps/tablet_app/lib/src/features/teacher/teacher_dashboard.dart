@@ -4,6 +4,7 @@ import '../../core/app_config.dart';
 import '../../core/edge_function_client.dart';
 import '../../core/teacher_gate.dart';
 import '../../models/sample_data.dart';
+import 'class_management_service.dart';
 import 'student_management_service.dart';
 import 'teacher_home_service.dart';
 
@@ -23,6 +24,9 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
     edgeClient: EdgeFunctionClient(),
   );
   final _studentService = const StudentManagementService(
+    edgeClient: EdgeFunctionClient(),
+  );
+  final _classService = const ClassManagementService(
     edgeClient: EdgeFunctionClient(),
   );
 
@@ -65,6 +69,7 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
               config: widget.config,
               homeService: _homeService,
               studentService: _studentService,
+              classService: _classService,
             ),
           ),
         ],
@@ -78,11 +83,13 @@ class _TeacherBoardContent extends StatelessWidget {
     required this.config,
     required this.homeService,
     required this.studentService,
+    required this.classService,
   });
 
   final AppConfig config;
   final TeacherHomeService homeService;
   final StudentManagementService studentService;
+  final ClassManagementService classService;
 
   @override
   Widget build(BuildContext context) {
@@ -115,7 +122,14 @@ class _TeacherBoardContent extends StatelessWidget {
         return Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Expanded(child: _ClassPanel(classes: sampleClasses)),
+            Expanded(
+              child: studyRoom == null
+                  ? const _EmptyClassPanel()
+                  : _ClassManagementPanel(
+                      studyRoom: studyRoom,
+                      service: classService,
+                    ),
+            ),
             const SizedBox(width: 16),
             Expanded(
               child: studyRoom == null
@@ -446,6 +460,283 @@ class _ClassPanel extends StatelessWidget {
   }
 }
 
+class _ClassManagementPanel extends StatefulWidget {
+  const _ClassManagementPanel({required this.studyRoom, required this.service});
+
+  final StudyRoomSummary studyRoom;
+  final ClassManagementService service;
+
+  @override
+  State<_ClassManagementPanel> createState() => _ClassManagementPanelState();
+}
+
+class _ClassManagementPanelState extends State<_ClassManagementPanel> {
+  late Future<List<ManagedClass>> _classesFuture;
+  final _nameController = TextEditingController();
+  final _descriptionController = TextEditingController();
+  final _startDateController = TextEditingController();
+  final _endDateController = TextEditingController();
+  final _startsAtController = TextEditingController(text: '15:00');
+  final _endsAtController = TextEditingController(text: '16:00');
+  final _selectedDays = <int>{1, 3};
+  var _classKind = 'regular';
+  String? _errorText;
+  var _submitting = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _classesFuture = widget.service.fetchClasses(widget.studyRoom.id);
+  }
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _descriptionController.dispose();
+    _startDateController.dispose();
+    _endDateController.dispose();
+    _startsAtController.dispose();
+    _endsAtController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _createClass() async {
+    final name = _nameController.text.trim();
+    final startDate = _startDateController.text.trim();
+    final endDate = _endDateController.text.trim();
+    final startsAt = _startsAtController.text.trim();
+    final endsAt = _endsAtController.text.trim();
+    if (name.length < 2 ||
+        !_datePattern.hasMatch(startDate) ||
+        !_datePattern.hasMatch(endDate) ||
+        !_timePattern.hasMatch(startsAt) ||
+        !_timePattern.hasMatch(endsAt) ||
+        _selectedDays.isEmpty) {
+      setState(() => _errorText = '수업명, 기간, 요일, 시간을 입력해 주세요.');
+      return;
+    }
+
+    setState(() {
+      _errorText = null;
+      _submitting = true;
+    });
+    try {
+      await widget.service.createClass(
+        studyRoomId: widget.studyRoom.id,
+        name: name,
+        description: _descriptionController.text.trim(),
+        classKind: _classKind,
+        startDate: startDate,
+        endDate: endDate,
+        dayOfWeeks: _selectedDays.toList()..sort(),
+        startsAt: startsAt,
+        endsAt: endsAt,
+      );
+      _nameController.clear();
+      _descriptionController.clear();
+      if (mounted) {
+        setState(() {
+          _classesFuture = widget.service.fetchClasses(widget.studyRoom.id);
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() => _errorText = '수업 생성에 실패했습니다.');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _submitting = false);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('수업 관리', style: Theme.of(context).textTheme.titleLarge),
+            const SizedBox(height: 4),
+            Text(widget.studyRoom.name),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _nameController,
+              enabled: !_submitting,
+              decoration: const InputDecoration(
+                labelText: '수업명',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: _descriptionController,
+              enabled: !_submitting,
+              decoration: const InputDecoration(
+                labelText: '수업 설명',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                SizedBox(
+                  width: 130,
+                  child: TextField(
+                    controller: _startDateController,
+                    enabled: !_submitting,
+                    decoration: const InputDecoration(
+                      labelText: '시작일',
+                      hintText: '2026-07-10',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+                SizedBox(
+                  width: 130,
+                  child: TextField(
+                    controller: _endDateController,
+                    enabled: !_submitting,
+                    decoration: const InputDecoration(
+                      labelText: '종료일',
+                      hintText: '2026-10-10',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+                SizedBox(
+                  width: 105,
+                  child: TextField(
+                    controller: _startsAtController,
+                    enabled: !_submitting,
+                    decoration: const InputDecoration(
+                      labelText: '시작',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+                SizedBox(
+                  width: 105,
+                  child: TextField(
+                    controller: _endsAtController,
+                    enabled: !_submitting,
+                    decoration: InputDecoration(
+                      labelText: '종료',
+                      errorText: _errorText,
+                      border: const OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            SegmentedButton<String>(
+              segments: const [
+                ButtonSegment(value: 'regular', label: Text('기본')),
+                ButtonSegment(value: 'makeup', label: Text('보강')),
+                ButtonSegment(value: 'extra', label: Text('추가')),
+              ],
+              selected: {_classKind},
+              onSelectionChanged: _submitting
+                  ? null
+                  : (selection) => setState(() => _classKind = selection.first),
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 6,
+              children: [
+                for (var day = 0; day < _dayLabels.length; day++)
+                  FilterChip(
+                    label: Text(_dayLabels[day]),
+                    selected: _selectedDays.contains(day),
+                    onSelected: _submitting
+                        ? null
+                        : (selected) {
+                            setState(() {
+                              if (selected) {
+                                _selectedDays.add(day);
+                              } else {
+                                _selectedDays.remove(day);
+                              }
+                            });
+                          },
+                  ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            FilledButton.icon(
+              onPressed: _submitting ? null : _createClass,
+              icon: const Icon(Icons.add),
+              label: Text(_submitting ? '생성 중' : '수업 생성'),
+            ),
+            const SizedBox(height: 12),
+            Expanded(
+              child: FutureBuilder<List<ManagedClass>>(
+                future: _classesFuture,
+                builder: (context, snapshot) {
+                  if (snapshot.connectionState != ConnectionState.done) {
+                    return const Center(child: CircularProgressIndicator());
+                  }
+                  if (snapshot.hasError) {
+                    return Text('수업 목록을 불러오지 못했습니다. ${snapshot.error}');
+                  }
+                  final classes = snapshot.data ?? const <ManagedClass>[];
+                  if (classes.isEmpty) {
+                    return const Center(child: Text('등록된 수업이 없습니다.'));
+                  }
+                  return ListView.builder(
+                    itemCount: classes.length,
+                    itemBuilder: (context, index) {
+                      final classRoom = classes[index];
+                      return ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        leading: Icon(
+                          classRoom.classKind == 'makeup'
+                              ? Icons.event_repeat
+                              : Icons.school_outlined,
+                        ),
+                        title: Text(classRoom.name),
+                        subtitle: Text(
+                          '${_classKindLabel(classRoom.classKind)} · ${classRoom.scheduleText}',
+                        ),
+                      );
+                    },
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _EmptyClassPanel extends StatelessWidget {
+  const _EmptyClassPanel();
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('수업 관리', style: Theme.of(context).textTheme.titleLarge),
+            const SizedBox(height: 12),
+            const Text('공부방을 먼저 생성해 주세요.'),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _EnrollmentPanel extends StatelessWidget {
   const _EnrollmentPanel({required this.classes});
 
@@ -753,4 +1044,16 @@ class _AuditPanel extends StatelessWidget {
       ),
     );
   }
+}
+
+const _dayLabels = ['일', '월', '화', '수', '목', '금', '토'];
+final _datePattern = RegExp(r'^\d{4}-\d{2}-\d{2}$');
+final _timePattern = RegExp(r'^\d{2}:\d{2}$');
+
+String _classKindLabel(String classKind) {
+  return switch (classKind) {
+    'makeup' => '보강',
+    'extra' => '추가',
+    _ => '기본',
+  };
 }

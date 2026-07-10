@@ -97,6 +97,18 @@ async function routeEdgeRequest(
     }
   }
 
+  const studyRoomClassesMatch = path.match(
+    /^\/study-rooms\/([^/]+)\/classes$/,
+  );
+  if (studyRoomClassesMatch) {
+    if (method === "GET") {
+      return await listClasses(studyRoomClassesMatch[1], context);
+    }
+    if (method === "POST") {
+      return await createClass(studyRoomClassesMatch[1], body, context);
+    }
+  }
+
   const checkInMatch = path.match(
     /^\/class-sessions\/([^/]+)\/check-in$/,
   );
@@ -243,6 +255,131 @@ async function onboardTeacher(
       name: studyRoom.name,
       description: studyRoom.description,
     }],
+  };
+}
+
+async function listClasses(
+  studyRoomId: string,
+  { db, teacher }: AppContext,
+): Promise<Record<string, unknown>> {
+  const activeTeacher = requireTeacherProfile(teacher);
+  assertUuid(studyRoomId, "공부방 정보가 올바르지 않습니다.");
+  await assertStudyRoomAccess(db, activeTeacher, studyRoomId, {
+    allowAdmin: true,
+  });
+
+  const { data: classes, error } = await db
+    .from("classes")
+    .select(
+      "id, name, description, class_kind, start_date, end_date, schedule_text, active, class_schedules(day_of_week, starts_at, ends_at)",
+    )
+    .eq("study_room_id", studyRoomId)
+    .order("created_at", { ascending: false });
+
+  if (error) throw new EdgeApiError(500, "수업 목록 조회에 실패했습니다.");
+
+  return {
+    ok: true,
+    classes: (classes ?? []).map(formatClassSummary),
+  };
+}
+
+async function createClass(
+  studyRoomId: string,
+  body: Record<string, unknown>,
+  { db, teacher }: AppContext,
+): Promise<Record<string, unknown>> {
+  const activeTeacher = requireTeacherProfile(teacher);
+  assertUuid(studyRoomId, "공부방 정보가 올바르지 않습니다.");
+  await assertStudyRoomAccess(db, activeTeacher, studyRoomId, {
+    allowAdmin: false,
+  });
+
+  const name = stringValue(body.name);
+  const description = nullableString(body.description);
+  const classKind = normalizeClassKind(body.classKind);
+  const startDate = stringValue(body.startDate);
+  const endDate = stringValue(body.endDate);
+  const dayOfWeeks = normalizeDayOfWeeks(body.dayOfWeeks);
+  const startsAt = normalizeTime(
+    body.startsAt,
+    "수업 시작 시간을 입력해 주세요.",
+  );
+  const endsAt = normalizeTime(body.endsAt, "수업 종료 시간을 입력해 주세요.");
+
+  if (name.length < 2) throw new EdgeApiError(400, "수업명을 입력해 주세요.");
+  assertDate(startDate, "수업 시작일이 올바르지 않습니다.");
+  assertDate(endDate, "수업 종료일이 올바르지 않습니다.");
+  if (endDate < startDate) {
+    throw new EdgeApiError(400, "수업 종료일은 시작일 이후여야 합니다.");
+  }
+  if (startsAt >= endsAt) {
+    throw new EdgeApiError(400, "수업 종료 시간은 시작 시간 이후여야 합니다.");
+  }
+
+  const { data: studyRoom, error: studyRoomError } = await db
+    .from("study_rooms")
+    .select("id, organization_id")
+    .eq("id", studyRoomId)
+    .eq("owner_teacher_id", activeTeacher.id)
+    .single();
+
+  if (studyRoomError) {
+    throw new EdgeApiError(500, "공부방 조회에 실패했습니다.");
+  }
+
+  const scheduleText = formatScheduleText(dayOfWeeks, startsAt, endsAt);
+  const { data: classRoom, error: classError } = await db
+    .from("classes")
+    .insert({
+      organization_id: studyRoom.organization_id,
+      study_room_id: studyRoomId,
+      teacher_id: activeTeacher.id,
+      name,
+      description,
+      class_kind: classKind,
+      start_date: startDate,
+      end_date: endDate,
+      schedule_text: scheduleText,
+      active: true,
+    })
+    .select(
+      "id, name, description, class_kind, start_date, end_date, schedule_text, active",
+    )
+    .single();
+
+  if (classError) throw new EdgeApiError(500, "수업 생성에 실패했습니다.");
+
+  const scheduleRows = dayOfWeeks.map((dayOfWeek) => ({
+    class_id: classRoom.id,
+    day_of_week: dayOfWeek,
+    starts_at: startsAt,
+    ends_at: endsAt,
+  }));
+  const { data: schedules, error: scheduleError } = await db
+    .from("class_schedules")
+    .insert(scheduleRows)
+    .select("day_of_week, starts_at, ends_at");
+
+  if (scheduleError) {
+    throw new EdgeApiError(500, "수업 일정 저장에 실패했습니다.");
+  }
+
+  await createClassAuditLog(db, {
+    organizationId: studyRoom.organization_id,
+    studyRoomId,
+    actorTeacherId: activeTeacher.id,
+    classId: classRoom.id,
+    title: "수업 등록",
+    summary: `${classRoom.name} 수업을 등록했습니다.`,
+  });
+
+  return {
+    ok: true,
+    class: formatClassSummary({
+      ...classRoom,
+      class_schedules: schedules ?? [],
+    }),
   };
 }
 
@@ -714,6 +851,32 @@ async function createStudentAuditLog(
   if (error) throw new EdgeApiError(500, "사용 히스토리 기록에 실패했습니다.");
 }
 
+async function createClassAuditLog(
+  db: SupabaseClient,
+  input: {
+    organizationId: string;
+    studyRoomId: string;
+    actorTeacherId: string;
+    classId: string;
+    title: string;
+    summary: string;
+  },
+) {
+  const { error } = await db.from("audit_logs").insert({
+    organization_id: input.organizationId,
+    study_room_id: input.studyRoomId,
+    actor_teacher_id: input.actorTeacherId,
+    class_id: input.classId,
+    entity_type: "class",
+    entity_id: input.classId,
+    action: "created",
+    title: input.title,
+    summary: input.summary,
+  });
+
+  if (error) throw new EdgeApiError(500, "사용 히스토리 기록에 실패했습니다.");
+}
+
 async function hashStudentPin(db: SupabaseClient, pin: string) {
   const { data, error } = await db.rpc("hash_student_pin", {
     plain_pin: pin,
@@ -813,8 +976,97 @@ function stringValue(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function nullableString(value: unknown): string | null {
+  const text = stringValue(value);
+  return text.length === 0 ? null : text;
+}
+
 function assertUuid(value: string, message: string) {
   if (!uuidPattern.test(value)) throw new EdgeApiError(400, message);
+}
+
+function assertDate(value: string, message: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    throw new EdgeApiError(400, message);
+  }
+}
+
+function normalizeClassKind(value: unknown) {
+  const kind = stringValue(value) || "regular";
+  if (!["regular", "makeup", "extra"].includes(kind)) {
+    throw new EdgeApiError(400, "수업 유형이 올바르지 않습니다.");
+  }
+  return kind;
+}
+
+function normalizeDayOfWeeks(value: unknown) {
+  if (!Array.isArray(value)) {
+    throw new EdgeApiError(400, "수업 요일을 선택해 주세요.");
+  }
+  const days = [...new Set(value.map((day) => Number(day)))].sort();
+  if (
+    days.length === 0 ||
+    days.some((day) => !Number.isInteger(day) || day < 0 || day > 6)
+  ) {
+    throw new EdgeApiError(400, "수업 요일이 올바르지 않습니다.");
+  }
+  return days;
+}
+
+function normalizeTime(value: unknown, message: string) {
+  const time = stringValue(value);
+  if (!/^\d{2}:\d{2}$/.test(time)) throw new EdgeApiError(400, message);
+  return time;
+}
+
+function formatClassSummary(classRoom: Record<string, unknown>) {
+  const schedules = Array.isArray(classRoom.class_schedules)
+    ? classRoom.class_schedules
+    : [];
+  return {
+    id: classRoom.id,
+    name: classRoom.name,
+    description: classRoom.description,
+    classKind: classRoom.class_kind,
+    startDate: classRoom.start_date,
+    endDate: classRoom.end_date,
+    scheduleText: classRoom.schedule_text ??
+      formatScheduleTextFromSchedules(schedules),
+    active: classRoom.active,
+    schedules: schedules.map((schedule) => ({
+      dayOfWeek: (schedule as Record<string, unknown>).day_of_week,
+      startsAt: trimSeconds((schedule as Record<string, unknown>).starts_at),
+      endsAt: trimSeconds((schedule as Record<string, unknown>).ends_at),
+    })),
+  };
+}
+
+function formatScheduleTextFromSchedules(schedules: unknown[]) {
+  if (schedules.length === 0) return "";
+  const typed = schedules
+    .map((schedule) => schedule as Record<string, unknown>)
+    .sort((a, b) => Number(a.day_of_week) - Number(b.day_of_week));
+  return formatScheduleText(
+    typed.map((schedule) => Number(schedule.day_of_week)),
+    trimSeconds(typed[0].starts_at),
+    trimSeconds(typed[0].ends_at),
+  );
+}
+
+function formatScheduleText(
+  dayOfWeeks: number[],
+  startsAt: string,
+  endsAt: string,
+) {
+  const dayLabels = ["일", "월", "화", "수", "목", "금", "토"];
+  return `${
+    dayOfWeeks.map((day) => dayLabels[day]).join("/")
+  } ${startsAt}-${endsAt}`;
+}
+
+function trimSeconds(value: unknown) {
+  const text = stringValue(value);
+  return text.length >= 5 ? text.slice(0, 5) : text;
 }
 
 function requireTeacherProfile(teacher: TeacherContext | null) {
