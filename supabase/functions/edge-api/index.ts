@@ -2688,7 +2688,7 @@ async function resendNotification(
   const { data: current, error: currentError } = await db
     .from("notification_logs")
     .select(
-      "id, organization_id, study_room_id, student_id, guardian_id, class_id, class_session_id, attendance_record_id, event_type, channel, recipient_phone_masked, student_name, class_name, event_time, payload, retry_count",
+      "id, organization_id, study_room_id, student_id, guardian_id, class_id, class_session_id, attendance_record_id, event_type, channel, recipient_phone_masked, student_name, class_name, event_time, payload, retry_count, status",
     )
     .eq("id", notificationId)
     .maybeSingle();
@@ -2702,6 +2702,9 @@ async function resendNotification(
   await assertStudyRoomAccess(db, activeTeacher, current.study_room_id, {
     allowAdmin: false,
   });
+  if (current.status !== "failed") {
+    throw new EdgeApiError(409, "실패한 카카오 알림만 재발송할 수 있습니다.");
+  }
 
   const { data: retry, error: retryError } = await db
     .from("notification_logs")

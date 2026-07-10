@@ -6010,6 +6010,7 @@ class _NotificationLogTabState extends State<_NotificationLogTab> {
                 itemBuilder: (context, index) {
                   final log = logs[index];
                   final resending = _resendingId == log.id;
+                  final canResend = log.status == 'failed';
                   return ListTile(
                     dense: true,
                     contentPadding: EdgeInsets.zero,
@@ -6029,17 +6030,21 @@ class _NotificationLogTabState extends State<_NotificationLogTab> {
                         if (log.messagePreview.isNotEmpty) log.messagePreview,
                       ].join(' · '),
                     ),
-                    trailing: resending
-                        ? const SizedBox(
-                            width: 18,
-                            height: 18,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : IconButton(
-                            tooltip: '재발송 요청',
-                            icon: const Icon(Icons.refresh),
-                            onPressed: () => _resend(log),
-                          ),
+                    trailing: canResend
+                        ? resending
+                              ? const SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : IconButton(
+                                  tooltip: '재발송 요청',
+                                  icon: const Icon(Icons.refresh),
+                                  onPressed: () => _resend(log),
+                                )
+                        : null,
                   );
                 },
               );
