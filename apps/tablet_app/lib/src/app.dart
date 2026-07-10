@@ -63,11 +63,19 @@ class _AppShellState extends State<AppShell> {
         ? AuthService(config: widget.config)
         : null;
     _isSignedIn = _authService?.currentSession != null;
+    if (_isSignedIn) {
+      _selectedIndex = 1;
+    }
     _authSubscription = _authService?.onAuthStateChange.listen((state) {
       if (!mounted) {
         return;
       }
-      setState(() => _isSignedIn = state.session != null);
+      setState(() {
+        _isSignedIn = state.session != null;
+        if (_isSignedIn) {
+          _selectedIndex = 1;
+        }
+      });
     });
   }
 
@@ -90,13 +98,20 @@ class _AppShellState extends State<AppShell> {
     });
   }
 
+  void _signInDesignMode() {
+    setState(() {
+      _selectedIndex = 0;
+      _isSignedIn = true;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     if (!_isSignedIn) {
       return LoginScreen(
         config: widget.config,
         authService: _authService,
-        onDesignModeSignedIn: () => setState(() => _isSignedIn = true),
+        onDesignModeSignedIn: _signInDesignMode,
       );
     }
 
