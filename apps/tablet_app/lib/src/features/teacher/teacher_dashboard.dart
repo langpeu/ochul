@@ -4,6 +4,7 @@ import '../../core/app_config.dart';
 import '../../core/edge_function_client.dart';
 import '../../core/teacher_gate.dart';
 import '../../models/sample_data.dart';
+import 'audit_log_service.dart';
 import 'class_management_service.dart';
 import 'enrollment_management_service.dart';
 import 'student_management_service.dart';
@@ -31,6 +32,9 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
     edgeClient: EdgeFunctionClient(),
   );
   final _enrollmentService = const EnrollmentManagementService(
+    edgeClient: EdgeFunctionClient(),
+  );
+  final _auditLogService = const AuditLogService(
     edgeClient: EdgeFunctionClient(),
   );
 
@@ -75,6 +79,7 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
               studentService: _studentService,
               classService: _classService,
               enrollmentService: _enrollmentService,
+              auditLogService: _auditLogService,
             ),
           ),
         ],
@@ -90,6 +95,7 @@ class _TeacherBoardContent extends StatelessWidget {
     required this.studentService,
     required this.classService,
     required this.enrollmentService,
+    required this.auditLogService,
   });
 
   final AppConfig config;
@@ -97,6 +103,7 @@ class _TeacherBoardContent extends StatelessWidget {
   final StudentManagementService studentService;
   final ClassManagementService classService;
   final EnrollmentManagementService enrollmentService;
+  final AuditLogService auditLogService;
 
   @override
   Widget build(BuildContext context) {
@@ -108,7 +115,7 @@ class _TeacherBoardContent extends StatelessWidget {
           const SizedBox(width: 16),
           Expanded(child: _EnrollmentPanel(classes: sampleClasses)),
           const SizedBox(width: 16),
-          const Expanded(child: _AuditPanel()),
+          const Expanded(child: _SampleAuditPanel()),
         ],
       );
     }
@@ -158,7 +165,14 @@ class _TeacherBoardContent extends StatelessWidget {
                     ),
             ),
             const SizedBox(width: 16),
-            const Expanded(child: _AuditPanel()),
+            Expanded(
+              child: studyRoom == null
+                  ? const _EmptyStudyRoomPanel()
+                  : _AuditHistoryPanel(
+                      studyRoom: studyRoom,
+                      service: auditLogService,
+                    ),
+            ),
           ],
         );
       },
@@ -1301,8 +1315,8 @@ class _EmptyStudyRoomPanel extends StatelessWidget {
   }
 }
 
-class _AuditPanel extends StatelessWidget {
-  const _AuditPanel();
+class _SampleAuditPanel extends StatelessWidget {
+  const _SampleAuditPanel();
 
   @override
   Widget build(BuildContext context) {
@@ -1349,6 +1363,109 @@ class _AuditPanel extends StatelessWidget {
   }
 }
 
+class _AuditHistoryPanel extends StatefulWidget {
+  const _AuditHistoryPanel({required this.studyRoom, required this.service});
+
+  final StudyRoomSummary studyRoom;
+  final AuditLogService service;
+
+  @override
+  State<_AuditHistoryPanel> createState() => _AuditHistoryPanelState();
+}
+
+class _AuditHistoryPanelState extends State<_AuditHistoryPanel> {
+  var _category = AuditLogCategory.all;
+  late Future<List<AppAuditLog>> _logsFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _logsFuture = _fetchLogs();
+  }
+
+  Future<List<AppAuditLog>> _fetchLogs() {
+    return widget.service.fetchLogs(
+      studyRoomId: widget.studyRoom.id,
+      category: _category,
+    );
+  }
+
+  void _setCategory(AuditLogCategory category) {
+    setState(() {
+      _category = category;
+      _logsFuture = _fetchLogs();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('사용 히스토리', style: Theme.of(context).textTheme.titleLarge),
+            const SizedBox(height: 4),
+            Text(widget.studyRoom.name),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              children: [
+                for (final category in AuditLogCategory.values)
+                  FilterChip(
+                    label: Text(category.label),
+                    selected: _category == category,
+                    onSelected: (_) => _setCategory(category),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Expanded(
+              child: FutureBuilder<List<AppAuditLog>>(
+                future: _logsFuture,
+                builder: (context, snapshot) {
+                  if (snapshot.connectionState != ConnectionState.done) {
+                    return const Center(child: CircularProgressIndicator());
+                  }
+                  if (snapshot.hasError) {
+                    return Text('히스토리를 불러오지 못했습니다. ${snapshot.error}');
+                  }
+                  final logs = snapshot.data ?? const <AppAuditLog>[];
+                  if (logs.isEmpty) {
+                    return const Center(child: Text('표시할 히스토리가 없습니다.'));
+                  }
+                  return ListView.builder(
+                    itemCount: logs.length,
+                    itemBuilder: (context, index) {
+                      final log = logs[index];
+                      return ListTile(
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                        leading: Icon(_auditIcon(log.category)),
+                        title: Text(log.title),
+                        subtitle: Text(
+                          [
+                            _auditCategoryLabel(log.category),
+                            log.actor,
+                            _formatAuditTime(log.createdAt),
+                            if (log.summary != null && log.summary!.isNotEmpty)
+                              log.summary!,
+                          ].join(' · '),
+                        ),
+                      );
+                    },
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 const _dayLabels = ['일', '월', '화', '수', '목', '금', '토'];
 final _datePattern = RegExp(r'^\d{4}-\d{2}-\d{2}$');
 final _timePattern = RegExp(r'^\d{2}:\d{2}$');
@@ -1359,4 +1476,28 @@ String _classKindLabel(String classKind) {
     'extra' => '추가',
     _ => '기본',
   };
+}
+
+IconData _auditIcon(String category) {
+  return switch (category) {
+    'student' => Icons.person_outline,
+    'kakao' => Icons.sms_outlined,
+    _ => Icons.school_outlined,
+  };
+}
+
+String _auditCategoryLabel(String category) {
+  return switch (category) {
+    'student' => '학생',
+    'kakao' => '카카오',
+    _ => '수업',
+  };
+}
+
+String _formatAuditTime(DateTime? value) {
+  if (value == null) return '-';
+  final local = value.toLocal();
+  String twoDigits(int number) => number.toString().padLeft(2, '0');
+  return '${twoDigits(local.month)}/${twoDigits(local.day)} '
+      '${twoDigits(local.hour)}:${twoDigits(local.minute)}';
 }

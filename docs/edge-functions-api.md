@@ -118,7 +118,8 @@ Edge API 경로는 REST 스타일로 간결하고 명확하게 둔다.
 ### audit-logs
 
 - `GET /study-rooms/{studyRoomId}/audit-logs`: 사용 히스토리
-- Query filter: `type`, `from`, `to`, `teacherId`, `studentId`, `classId`, `notificationStatus`
+- Body filter: `category` (`all`, `student`, `class`, `kakao`), `limit`
+- 응답은 `audit_logs`와 카카오 `notification_logs`를 시간순으로 합쳐 반환한다.
 
 ### admin
 

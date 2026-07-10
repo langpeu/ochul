@@ -109,6 +109,13 @@ async function routeEdgeRequest(
     }
   }
 
+  const studyRoomAuditLogsMatch = path.match(
+    /^\/study-rooms\/([^/]+)\/audit-logs$/,
+  );
+  if (method === "GET" && studyRoomAuditLogsMatch) {
+    return await listAuditLogs(studyRoomAuditLogsMatch[1], body, context);
+  }
+
   const classStudentsMatch = path.match(/^\/classes\/([^/]+)\/students$/);
   if (classStudentsMatch) {
     if (method === "GET") {
@@ -723,6 +730,105 @@ async function listStudents(
       ageGroup: student.age_group,
       avatarKey: student.avatar_key,
     })),
+  };
+}
+
+async function listAuditLogs(
+  studyRoomId: string,
+  body: Record<string, unknown>,
+  { db, teacher }: AppContext,
+): Promise<Record<string, unknown>> {
+  const activeTeacher = requireTeacherProfile(teacher);
+  assertUuid(studyRoomId, "공부방 정보가 올바르지 않습니다.");
+  await assertStudyRoomAccess(db, activeTeacher, studyRoomId, {
+    allowAdmin: true,
+  });
+
+  const category = normalizeAuditCategory(body.category);
+  const limit = normalizeLimit(body.limit, 60, 100);
+  const records: Record<string, unknown>[] = [];
+
+  if (category !== "kakao") {
+    let query = db
+      .from("audit_logs")
+      .select(
+        "id, entity_type, action, title, summary, student_id, class_id, class_session_id, notification_log_id, created_at, teachers(name)",
+      )
+      .eq("study_room_id", studyRoomId)
+      .order("created_at", { ascending: false })
+      .limit(limit);
+
+    const entityTypes = auditEntityTypesForCategory(category);
+    if (entityTypes.length > 0) {
+      query = query.in("entity_type", entityTypes);
+    }
+
+    const { data: auditLogs, error: auditError } = await query;
+    if (auditError) {
+      throw new EdgeApiError(500, "사용 히스토리 조회에 실패했습니다.");
+    }
+
+    records.push(
+      ...(auditLogs ?? []).map((log) => {
+        const teacher = normalizeJoinedObject(log.teachers);
+        return {
+          id: log.id,
+          category: auditCategoryFromEntityType(log.entity_type),
+          entityType: log.entity_type,
+          action: log.action,
+          title: log.title,
+          summary: log.summary,
+          actor: teacher.name ?? "시스템",
+          studentId: log.student_id,
+          classId: log.class_id,
+          classSessionId: log.class_session_id,
+          notificationLogId: log.notification_log_id,
+          createdAt: log.created_at,
+        };
+      }),
+    );
+  }
+
+  if (category === "all" || category === "kakao") {
+    const { data: notificationLogs, error: notificationError } = await db
+      .from("notification_logs")
+      .select(
+        "id, event_type, status, student_id, class_id, class_session_id, student_name, class_name, recipient_phone_masked, created_at, sent_at",
+      )
+      .eq("study_room_id", studyRoomId)
+      .eq("channel", "kakao")
+      .order("created_at", { ascending: false })
+      .limit(limit);
+
+    if (notificationError) {
+      throw new EdgeApiError(500, "카카오 발송 이력 조회에 실패했습니다.");
+    }
+
+    records.push(
+      ...(notificationLogs ?? []).map((log) => ({
+        id: log.id,
+        category: "kakao",
+        entityType: "notification",
+        action: notificationStatusToAction(log.status),
+        title: formatNotificationTitle(log.status),
+        summary: formatNotificationSummary(log),
+        actor: "시스템",
+        studentId: log.student_id,
+        classId: log.class_id,
+        classSessionId: log.class_session_id,
+        notificationLogId: log.id,
+        createdAt: log.sent_at ?? log.created_at,
+      })),
+    );
+  }
+
+  records.sort((a, b) =>
+    String(b.createdAt).localeCompare(String(a.createdAt))
+  );
+
+  return {
+    ok: true,
+    logs: records.slice(0, limit),
   };
 }
 
@@ -1405,6 +1511,20 @@ function normalizeUuidList(value: unknown, message: string) {
   return ids;
 }
 
+function normalizeAuditCategory(value: unknown) {
+  const category = stringValue(value) || "all";
+  if (!["all", "student", "class", "kakao"].includes(category)) {
+    throw new EdgeApiError(400, "히스토리 필터가 올바르지 않습니다.");
+  }
+  return category;
+}
+
+function normalizeLimit(value: unknown, fallback: number, maximum: number) {
+  const limit = Number(value ?? fallback);
+  if (!Number.isInteger(limit) || limit < 1) return fallback;
+  return Math.min(limit, maximum);
+}
+
 function normalizeTime(value: unknown, message: string) {
   const time = stringValue(value);
   if (!/^\d{2}:\d{2}$/.test(time)) throw new EdgeApiError(400, message);
@@ -1488,6 +1608,60 @@ function formatClassSession(
     endsAt: session.ends_at,
     status: session.status,
   };
+}
+
+function auditEntityTypesForCategory(category: string) {
+  if (category === "student") return ["student", "guardian"];
+  if (category === "class") {
+    return [
+      "class",
+      "class_schedule",
+      "class_student",
+      "class_session",
+      "attendance",
+    ];
+  }
+  return [];
+}
+
+function auditCategoryFromEntityType(value: unknown) {
+  const entityType = String(value);
+  if (["student", "guardian"].includes(entityType)) return "student";
+  if (entityType === "notification") return "kakao";
+  return "class";
+}
+
+function notificationStatusToAction(value: unknown) {
+  const status = String(value);
+  if (status === "sent") return "message_sent";
+  if (status === "failed") return "message_failed";
+  if (status === "resent") return "message_resent";
+  return "message_requested";
+}
+
+function formatNotificationTitle(status: unknown) {
+  const label = switchNotificationStatus(status);
+  return `카카오 알림 ${label}`;
+}
+
+function formatNotificationSummary(log: Record<string, unknown>) {
+  const studentName = stringValue(log.student_name) || "학생";
+  const className = stringValue(log.class_name) || "수업";
+  const recipient = stringValue(log.recipient_phone_masked) || "보호자";
+  return `${studentName} · ${className} · ${recipient}`;
+}
+
+function switchNotificationStatus(status: unknown) {
+  switch (String(status)) {
+    case "sent":
+      return "발송 성공";
+    case "failed":
+      return "발송 실패";
+    case "cancelled":
+      return "취소";
+    default:
+      return "발송 대기";
+  }
 }
 
 function requireTeacherProfile(teacher: TeacherContext | null) {
