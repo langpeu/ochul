@@ -1,8 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'core/app_config.dart';
 import 'features/admin/admin_dashboard.dart';
 import 'features/attendance/student_attendance_screen.dart';
+import 'features/auth/auth_service.dart';
 import 'features/auth/login_screen.dart';
 import 'features/teacher/teacher_dashboard.dart';
 
@@ -49,13 +53,37 @@ class AppShell extends StatefulWidget {
 class _AppShellState extends State<AppShell> {
   var _selectedIndex = 0;
   var _isSignedIn = false;
+  late final AuthService? _authService;
+  StreamSubscription<AuthState>? _authSubscription;
+
+  @override
+  void initState() {
+    super.initState();
+    _authService = widget.config.isSupabaseConfigured
+        ? AuthService(config: widget.config)
+        : null;
+    _isSignedIn = _authService?.currentSession != null;
+    _authSubscription = _authService?.onAuthStateChange.listen((state) {
+      if (!mounted) {
+        return;
+      }
+      setState(() => _isSignedIn = state.session != null);
+    });
+  }
+
+  @override
+  void dispose() {
+    _authSubscription?.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     if (!_isSignedIn) {
       return LoginScreen(
         config: widget.config,
-        onSignedIn: () => setState(() => _isSignedIn = true),
+        authService: _authService,
+        onDesignModeSignedIn: () => setState(() => _isSignedIn = true),
       );
     }
 
