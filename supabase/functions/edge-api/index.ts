@@ -203,6 +203,28 @@ async function routeEdgeRequest(
     return await openClassSession(openClassSessionMatch[1], context);
   }
 
+  const cancelClassSessionMatch = path.match(
+    /^\/classes\/([^/]+)\/sessions\/cancel-today$/,
+  );
+  if (method === "POST" && cancelClassSessionMatch) {
+    return await cancelTodayClassSession(
+      cancelClassSessionMatch[1],
+      body,
+      context,
+    );
+  }
+
+  const makeupClassSessionMatch = path.match(
+    /^\/classes\/([^/]+)\/sessions\/makeup$/,
+  );
+  if (method === "POST" && makeupClassSessionMatch) {
+    return await createMakeupClassSession(
+      makeupClassSessionMatch[1],
+      body,
+      context,
+    );
+  }
+
   if (method === "GET" && path === "/attendance/today") {
     return await listTodayAttendance(context);
   }
@@ -738,6 +760,167 @@ async function openClassSession(
   return {
     ok: true,
     session: formatClassSession(session, classRoom),
+  };
+}
+
+async function cancelTodayClassSession(
+  classId: string,
+  body: Record<string, unknown>,
+  { db, teacher }: AppContext,
+): Promise<Record<string, unknown>> {
+  const activeTeacher = requireTeacherProfile(teacher);
+  assertUuid(classId, "수업 정보가 올바르지 않습니다.");
+  const classRoom = await readAccessibleClass(db, classId, activeTeacher, {
+    allowAdmin: false,
+  });
+  const reason = nullableString(body.reason);
+  const sessionDate = todayDateString();
+  const session = await ensureClassSessionForDate(db, classRoom, sessionDate, {
+    status: "cancelled",
+    reason,
+    teacherId: activeTeacher.id,
+  });
+
+  const { data: updatedSession, error: updateError } = await db
+    .from("class_sessions")
+    .update({
+      status: "cancelled",
+      change_reason: reason,
+      opened_by_teacher_id: activeTeacher.id,
+    })
+    .eq("id", session.id)
+    .select("id, session_date, starts_at, ends_at, status")
+    .single();
+
+  if (updateError) {
+    throw new EdgeApiError(500, "휴강 처리에 실패했습니다.");
+  }
+
+  await createClassSessionChange(db, {
+    organizationId: classRoom.organization_id,
+    studyRoomId: classRoom.study_room_id,
+    classSessionId: updatedSession.id,
+    changeType: "cancelled",
+    reason,
+    teacherId: activeTeacher.id,
+    beforeValue: { status: session.status },
+    afterValue: { status: "cancelled", sessionDate },
+  });
+
+  const notifications = await createClassChangeNotificationLogs(db, {
+    organizationId: classRoom.organization_id,
+    studyRoomId: classRoom.study_room_id,
+    classId,
+    classSessionId: updatedSession.id,
+    eventType: "class_cancelled",
+    className: String(classRoom.name),
+    messageTitle: "휴강 안내",
+    sessionDate,
+    startsAt: updatedSession.starts_at,
+    endsAt: updatedSession.ends_at,
+    reason,
+  });
+
+  await createClassChangeAuditLog(db, {
+    organizationId: classRoom.organization_id,
+    studyRoomId: classRoom.study_room_id,
+    actorTeacherId: activeTeacher.id,
+    classId,
+    classSessionId: updatedSession.id,
+    action: "status_changed",
+    title: "수업 휴강",
+    summary: `${classRoom.name} 수업을 휴강 처리했습니다.`,
+  });
+
+  return {
+    ok: true,
+    session: formatClassSession(updatedSession, classRoom),
+    notifications: { requested: notifications.length },
+  };
+}
+
+async function createMakeupClassSession(
+  classId: string,
+  body: Record<string, unknown>,
+  { db, teacher }: AppContext,
+): Promise<Record<string, unknown>> {
+  const activeTeacher = requireTeacherProfile(teacher);
+  assertUuid(classId, "수업 정보가 올바르지 않습니다.");
+  const classRoom = await readAccessibleClass(db, classId, activeTeacher, {
+    allowAdmin: false,
+  });
+
+  const sessionDate = stringValue(body.sessionDate);
+  const startsAt = normalizeTime(
+    body.startsAt,
+    "보강 시작 시간을 입력해 주세요.",
+  );
+  const endsAt = normalizeTime(body.endsAt, "보강 종료 시간을 입력해 주세요.");
+  const reason = nullableString(body.reason);
+  assertDate(sessionDate, "보강 날짜가 올바르지 않습니다.");
+  if (startsAt >= endsAt) {
+    throw new EdgeApiError(400, "보강 종료 시간은 시작 시간 이후여야 합니다.");
+  }
+
+  const { data: session, error } = await db
+    .from("class_sessions")
+    .insert({
+      organization_id: classRoom.organization_id,
+      study_room_id: classRoom.study_room_id,
+      class_id: classId,
+      session_date: sessionDate,
+      starts_at: toKstIso(sessionDate, startsAt),
+      ends_at: toKstIso(sessionDate, endsAt),
+      kind: "makeup",
+      status: "scheduled",
+      change_reason: reason,
+      opened_by_teacher_id: activeTeacher.id,
+    })
+    .select("id, session_date, starts_at, ends_at, status")
+    .single();
+
+  if (error) throw new EdgeApiError(500, "보강 회차 생성에 실패했습니다.");
+
+  await createClassSessionChange(db, {
+    organizationId: classRoom.organization_id,
+    studyRoomId: classRoom.study_room_id,
+    classSessionId: session.id,
+    changeType: "makeup_added",
+    reason,
+    teacherId: activeTeacher.id,
+    beforeValue: null,
+    afterValue: { sessionDate, startsAt, endsAt },
+  });
+
+  const notifications = await createClassChangeNotificationLogs(db, {
+    organizationId: classRoom.organization_id,
+    studyRoomId: classRoom.study_room_id,
+    classId,
+    classSessionId: session.id,
+    eventType: "class_makeup_added",
+    className: String(classRoom.name),
+    messageTitle: "보강 안내",
+    sessionDate,
+    startsAt: session.starts_at,
+    endsAt: session.ends_at,
+    reason,
+  });
+
+  await createClassChangeAuditLog(db, {
+    organizationId: classRoom.organization_id,
+    studyRoomId: classRoom.study_room_id,
+    actorTeacherId: activeTeacher.id,
+    classId,
+    classSessionId: session.id,
+    action: "created",
+    title: "보강 수업 생성",
+    summary: `${classRoom.name} 보강 수업을 생성했습니다.`,
+  });
+
+  return {
+    ok: true,
+    session: formatClassSession(session, classRoom),
+    notifications: { requested: notifications.length },
   };
 }
 
@@ -1538,6 +1721,66 @@ async function readClassSession(db: SupabaseClient, classSessionId: string) {
   return data;
 }
 
+async function ensureClassSessionForDate(
+  db: SupabaseClient,
+  classRoom: Record<string, unknown>,
+  sessionDate: string,
+  input: {
+    status: "scheduled" | "open" | "completed" | "cancelled";
+    reason: string | null;
+    teacherId: string;
+  },
+) {
+  const { data: existing, error: existingError } = await db
+    .from("class_sessions")
+    .select("id, session_date, starts_at, ends_at, status")
+    .eq("class_id", classRoom.id)
+    .eq("session_date", sessionDate)
+    .maybeSingle();
+
+  if (existingError) {
+    throw new EdgeApiError(500, "수업 회차 조회에 실패했습니다.");
+  }
+  if (existing) return existing;
+
+  const { data: schedule, error: scheduleError } = await db
+    .from("class_schedules")
+    .select("id, starts_at, ends_at")
+    .eq("class_id", classRoom.id)
+    .eq("active", true)
+    .order("day_of_week", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  if (scheduleError) {
+    throw new EdgeApiError(500, "수업 일정 조회에 실패했습니다.");
+  }
+  if (!schedule) {
+    throw new EdgeApiError(400, "수업 일정이 먼저 필요합니다.");
+  }
+
+  const { data: session, error } = await db
+    .from("class_sessions")
+    .insert({
+      organization_id: classRoom.organization_id,
+      study_room_id: classRoom.study_room_id,
+      class_id: classRoom.id,
+      class_schedule_id: schedule.id,
+      session_date: sessionDate,
+      starts_at: toKstIso(sessionDate, schedule.starts_at),
+      ends_at: toKstIso(sessionDate, schedule.ends_at),
+      kind: classRoom.class_kind,
+      status: input.status,
+      change_reason: input.reason,
+      opened_by_teacher_id: input.teacherId,
+    })
+    .select("id, session_date, starts_at, ends_at, status")
+    .single();
+
+  if (error) throw new EdgeApiError(500, "수업 회차 생성에 실패했습니다.");
+  return session;
+}
+
 async function assertStudyRoomAccess(
   db: SupabaseClient,
   teacher: TeacherContext,
@@ -1876,6 +2119,96 @@ async function createPaymentReminderNotificationLogs(
   return data ?? [];
 }
 
+async function createClassChangeNotificationLogs(
+  db: SupabaseClient,
+  input: {
+    organizationId: string;
+    studyRoomId: string;
+    classId: string;
+    classSessionId: string;
+    eventType: "class_cancelled" | "class_makeup_added";
+    className: string;
+    messageTitle: string;
+    sessionDate: string;
+    startsAt: string;
+    endsAt: string;
+    reason: string | null;
+  },
+) {
+  const { data: enrollments, error } = await db
+    .from("class_students")
+    .select(
+      "student_id, students!inner(id, name, student_guardians(guardians!inner(id, phone, kakao_opt_in, opt_out_at, deleted_at)))",
+    )
+    .eq("class_id", input.classId)
+    .eq("active", true);
+
+  if (error) {
+    throw new EdgeApiError(500, "수업 보호자 알림 대상 조회에 실패했습니다.");
+  }
+
+  const rows = [];
+  for (const enrollment of enrollments ?? []) {
+    const student = normalizeJoinedObject(enrollment.students);
+    const guardianLinks = Array.isArray(student.student_guardians)
+      ? student.student_guardians
+      : [];
+    for (const link of guardianLinks) {
+      const guardians = normalizeGuardianContact(
+        (link as Record<string, unknown>).guardians,
+      );
+      for (const guardian of guardians) {
+        if (
+          guardian.kakao_opt_in !== true ||
+          guardian.opt_out_at !== null ||
+          guardian.deleted_at !== null
+        ) {
+          continue;
+        }
+        rows.push({
+          organization_id: input.organizationId,
+          study_room_id: input.studyRoomId,
+          student_id: enrollment.student_id,
+          guardian_id: guardian.id,
+          class_id: input.classId,
+          class_session_id: input.classSessionId,
+          event_type: input.eventType,
+          channel: "kakao",
+          recipient_phone_masked: maskPhone(guardian.phone),
+          student_name: student.name,
+          class_name: input.className,
+          event_time: new Date().toISOString(),
+          payload: {
+            title: input.messageTitle,
+            studentName: student.name,
+            className: input.className,
+            sessionDate: input.sessionDate,
+            startsAt: input.startsAt,
+            endsAt: input.endsAt,
+            reason: input.reason,
+          },
+          status: "pending",
+        });
+      }
+    }
+  }
+
+  if (rows.length === 0) return [];
+
+  const { data, error: insertError } = await db
+    .from("notification_logs")
+    .insert(rows)
+    .select("id");
+
+  if (insertError) {
+    throw new EdgeApiError(
+      500,
+      "카카오 수업 변경 알림 로그 생성에 실패했습니다.",
+    );
+  }
+  return data ?? [];
+}
+
 async function createAuditLog(
   db: SupabaseClient,
   input: {
@@ -1900,6 +2233,65 @@ async function createAuditLog(
     entity_type: "attendance",
     entity_id: input.entityId,
     action: "checked_in",
+    title: input.title,
+    summary: input.summary,
+  });
+
+  if (error) throw new EdgeApiError(500, "사용 히스토리 기록에 실패했습니다.");
+}
+
+async function createClassSessionChange(
+  db: SupabaseClient,
+  input: {
+    organizationId: string;
+    studyRoomId: string;
+    classSessionId: string;
+    relatedClassSessionId?: string;
+    changeType: "cancelled" | "makeup_added" | "rescheduled" | "time_changed";
+    beforeValue: Record<string, unknown> | null;
+    afterValue: Record<string, unknown> | null;
+    reason: string | null;
+    teacherId: string;
+  },
+) {
+  const { error } = await db.from("class_session_changes").insert({
+    organization_id: input.organizationId,
+    study_room_id: input.studyRoomId,
+    class_session_id: input.classSessionId,
+    related_class_session_id: input.relatedClassSessionId,
+    change_type: input.changeType,
+    before_value: input.beforeValue,
+    after_value: input.afterValue,
+    reason: input.reason,
+    notify_guardians: true,
+    changed_by_teacher_id: input.teacherId,
+  });
+
+  if (error) throw new EdgeApiError(500, "수업 변경 이력 기록에 실패했습니다.");
+}
+
+async function createClassChangeAuditLog(
+  db: SupabaseClient,
+  input: {
+    organizationId: string;
+    studyRoomId: string;
+    actorTeacherId: string;
+    classId: string;
+    classSessionId: string;
+    action: "created" | "status_changed";
+    title: string;
+    summary: string;
+  },
+) {
+  const { error } = await db.from("audit_logs").insert({
+    organization_id: input.organizationId,
+    study_room_id: input.studyRoomId,
+    actor_teacher_id: input.actorTeacherId,
+    class_id: input.classId,
+    class_session_id: input.classSessionId,
+    entity_type: "class_session",
+    entity_id: input.classSessionId,
+    action: input.action,
     title: input.title,
     summary: input.summary,
   });

@@ -545,6 +545,7 @@ class _ClassManagementPanelState extends State<_ClassManagementPanel> {
   String? _errorText;
   var _submitting = false;
   String? _openingClassId;
+  String? _processingClassId;
 
   @override
   void initState() {
@@ -632,6 +633,70 @@ class _ClassManagementPanelState extends State<_ClassManagementPanel> {
       if (mounted) {
         setState(() => _openingClassId = null);
       }
+    }
+  }
+
+  Future<void> _cancelToday(ManagedClass classRoom) async {
+    final reason = await showDialog<String>(
+      context: context,
+      builder: (context) => _ClassChangeReasonDialog(
+        title: '${classRoom.name} 휴강',
+        labelText: '휴강 사유',
+      ),
+    );
+    if (reason == null) return;
+
+    setState(() => _processingClassId = classRoom.id);
+    try {
+      final count = await widget.service.cancelTodaySession(
+        classId: classRoom.id,
+        reason: reason,
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('휴강 안내 $count건을 요청했습니다.')));
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('휴강 처리에 실패했습니다.')));
+      }
+    } finally {
+      if (mounted) setState(() => _processingClassId = null);
+    }
+  }
+
+  Future<void> _createMakeup(ManagedClass classRoom) async {
+    final result = await showDialog<_MakeupSessionResult>(
+      context: context,
+      builder: (context) => _MakeupSessionDialog(className: classRoom.name),
+    );
+    if (result == null) return;
+
+    setState(() => _processingClassId = classRoom.id);
+    try {
+      final count = await widget.service.createMakeupSession(
+        classId: classRoom.id,
+        sessionDate: result.sessionDate,
+        startsAt: result.startsAt,
+        endsAt: result.endsAt,
+        reason: result.reason,
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('보강 안내 $count건을 요청했습니다.')));
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('보강 생성에 실패했습니다.')));
+      }
+    } finally {
+      if (mounted) setState(() => _processingClassId = null);
     }
   }
 
@@ -777,6 +842,7 @@ class _ClassManagementPanelState extends State<_ClassManagementPanel> {
                     itemCount: classes.length,
                     itemBuilder: (context, index) {
                       final classRoom = classes[index];
+                      final processing = _processingClassId == classRoom.id;
                       return ListTile(
                         contentPadding: EdgeInsets.zero,
                         leading: Icon(
@@ -788,21 +854,51 @@ class _ClassManagementPanelState extends State<_ClassManagementPanel> {
                         subtitle: Text(
                           '${_classKindLabel(classRoom.classKind)} · ${classRoom.scheduleText}',
                         ),
-                        trailing: IconButton(
-                          tooltip: '출석 열기',
-                          icon: _openingClassId == classRoom.id
-                              ? const SizedBox(
-                                  width: 18,
-                                  height: 18,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
+                        trailing: processing || _openingClassId == classRoom.id
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : PopupMenuButton<_ClassAction>(
+                                tooltip: '수업 작업',
+                                icon: const Icon(Icons.more_vert),
+                                onSelected: (action) {
+                                  switch (action) {
+                                    case _ClassAction.openAttendance:
+                                      _openAttendance(classRoom);
+                                    case _ClassAction.cancelToday:
+                                      _cancelToday(classRoom);
+                                    case _ClassAction.createMakeup:
+                                      _createMakeup(classRoom);
+                                  }
+                                },
+                                itemBuilder: (context) => const [
+                                  PopupMenuItem(
+                                    value: _ClassAction.openAttendance,
+                                    child: ListTile(
+                                      leading: Icon(Icons.play_circle_outline),
+                                      title: Text('출석 열기'),
+                                    ),
                                   ),
-                                )
-                              : const Icon(Icons.play_circle_outline),
-                          onPressed: _openingClassId == null
-                              ? () => _openAttendance(classRoom)
-                              : null,
-                        ),
+                                  PopupMenuItem(
+                                    value: _ClassAction.cancelToday,
+                                    child: ListTile(
+                                      leading: Icon(Icons.event_busy_outlined),
+                                      title: Text('오늘 휴강'),
+                                    ),
+                                  ),
+                                  PopupMenuItem(
+                                    value: _ClassAction.createMakeup,
+                                    child: ListTile(
+                                      leading: Icon(Icons.event_repeat),
+                                      title: Text('보강 추가'),
+                                    ),
+                                  ),
+                                ],
+                              ),
                       );
                     },
                   );
@@ -812,6 +908,185 @@ class _ClassManagementPanelState extends State<_ClassManagementPanel> {
           ],
         ),
       ),
+    );
+  }
+}
+
+enum _ClassAction { openAttendance, cancelToday, createMakeup }
+
+class _ClassChangeReasonDialog extends StatefulWidget {
+  const _ClassChangeReasonDialog({
+    required this.title,
+    required this.labelText,
+  });
+
+  final String title;
+  final String labelText;
+
+  @override
+  State<_ClassChangeReasonDialog> createState() =>
+      _ClassChangeReasonDialogState();
+}
+
+class _ClassChangeReasonDialogState extends State<_ClassChangeReasonDialog> {
+  final _reasonController = TextEditingController();
+
+  @override
+  void dispose() {
+    _reasonController.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    Navigator.of(context).pop(_reasonController.text.trim());
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(widget.title),
+      content: SizedBox(
+        width: 320,
+        child: TextField(
+          controller: _reasonController,
+          decoration: InputDecoration(
+            labelText: widget.labelText,
+            border: const OutlineInputBorder(),
+          ),
+          onSubmitted: (_) => _submit(),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('취소'),
+        ),
+        FilledButton(onPressed: _submit, child: const Text('확인')),
+      ],
+    );
+  }
+}
+
+class _MakeupSessionResult {
+  const _MakeupSessionResult({
+    required this.sessionDate,
+    required this.startsAt,
+    required this.endsAt,
+    required this.reason,
+  });
+
+  final String sessionDate;
+  final String startsAt;
+  final String endsAt;
+  final String reason;
+}
+
+class _MakeupSessionDialog extends StatefulWidget {
+  const _MakeupSessionDialog({required this.className});
+
+  final String className;
+
+  @override
+  State<_MakeupSessionDialog> createState() => _MakeupSessionDialogState();
+}
+
+class _MakeupSessionDialogState extends State<_MakeupSessionDialog> {
+  final _dateController = TextEditingController();
+  final _startsAtController = TextEditingController(text: '15:00');
+  final _endsAtController = TextEditingController(text: '16:00');
+  final _reasonController = TextEditingController();
+  String? _errorText;
+
+  @override
+  void dispose() {
+    _dateController.dispose();
+    _startsAtController.dispose();
+    _endsAtController.dispose();
+    _reasonController.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final date = _dateController.text.trim();
+    final startsAt = _startsAtController.text.trim();
+    final endsAt = _endsAtController.text.trim();
+    if (!_datePattern.hasMatch(date) ||
+        !_timePattern.hasMatch(startsAt) ||
+        !_timePattern.hasMatch(endsAt) ||
+        startsAt.compareTo(endsAt) >= 0) {
+      setState(() => _errorText = '날짜와 시간을 확인해 주세요.');
+      return;
+    }
+    Navigator.of(context).pop(
+      _MakeupSessionResult(
+        sessionDate: date,
+        startsAt: startsAt,
+        endsAt: endsAt,
+        reason: _reasonController.text.trim(),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text('${widget.className} 보강 추가'),
+      content: SizedBox(
+        width: 360,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: _dateController,
+              decoration: const InputDecoration(
+                labelText: '보강일',
+                hintText: '2026-07-31',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _startsAtController,
+                    decoration: const InputDecoration(
+                      labelText: '시작',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: TextField(
+                    controller: _endsAtController,
+                    decoration: InputDecoration(
+                      labelText: '종료',
+                      errorText: _errorText,
+                      border: const OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _reasonController,
+              decoration: const InputDecoration(
+                labelText: '보강 사유',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('취소'),
+        ),
+        FilledButton(onPressed: _submit, child: const Text('생성')),
+      ],
     );
   }
 }

@@ -53,6 +53,46 @@ class ClassManagementService {
       method: EdgeHttpMethod.post,
     );
   }
+
+  Future<int> cancelTodaySession({
+    required String classId,
+    required String reason,
+  }) async {
+    final data = await edgeClient.call(
+      '/classes/$classId/sessions/cancel-today',
+      method: EdgeHttpMethod.post,
+      body: <String, dynamic>{'reason': reason},
+    );
+    return _readRequestedNotificationCount(data);
+  }
+
+  Future<int> createMakeupSession({
+    required String classId,
+    required String sessionDate,
+    required String startsAt,
+    required String endsAt,
+    required String reason,
+  }) async {
+    final data = await edgeClient.call(
+      '/classes/$classId/sessions/makeup',
+      method: EdgeHttpMethod.post,
+      body: <String, dynamic>{
+        'sessionDate': sessionDate,
+        'startsAt': startsAt,
+        'endsAt': endsAt,
+        'reason': reason,
+      },
+    );
+    return _readRequestedNotificationCount(data);
+  }
+
+  int _readRequestedNotificationCount(Map<String, dynamic> data) {
+    final notifications = data['notifications'];
+    if (notifications is Map<String, dynamic>) {
+      return notifications['requested'] as int? ?? 0;
+    }
+    return 0;
+  }
 }
 
 class ManagedClass {
