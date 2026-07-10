@@ -8,6 +8,7 @@ import 'admin_management_service.dart';
 import 'audit_log_service.dart';
 import 'attendance_management_service.dart';
 import 'class_management_service.dart';
+import 'classroom_layout_service.dart';
 import 'enrollment_management_service.dart';
 import 'notification_log_service.dart';
 import 'payment_management_service.dart';
@@ -51,6 +52,9 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
     edgeClient: EdgeFunctionClient(),
   );
   final _attendanceManagementService = const AttendanceManagementService(
+    edgeClient: EdgeFunctionClient(),
+  );
+  final _classroomLayoutService = const ClassroomLayoutService(
     edgeClient: EdgeFunctionClient(),
   );
 
@@ -98,6 +102,7 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
               paymentService: _paymentService,
               notificationLogService: _notificationLogService,
               attendanceManagementService: _attendanceManagementService,
+              classroomLayoutService: _classroomLayoutService,
             ),
           ),
         ],
@@ -118,6 +123,7 @@ class _TeacherBoardContent extends StatefulWidget {
     required this.paymentService,
     required this.notificationLogService,
     required this.attendanceManagementService,
+    required this.classroomLayoutService,
   });
 
   final AppConfig config;
@@ -130,6 +136,7 @@ class _TeacherBoardContent extends StatefulWidget {
   final PaymentManagementService paymentService;
   final NotificationLogService notificationLogService;
   final AttendanceManagementService attendanceManagementService;
+  final ClassroomLayoutService classroomLayoutService;
 
   @override
   State<_TeacherBoardContent> createState() => _TeacherBoardContentState();
@@ -354,12 +361,29 @@ class _TeacherBoardContentState extends State<_TeacherBoardContent> {
                     Expanded(
                       child: studyRoom == null
                           ? const _EmptyStudyRoomPanel()
-                          : _EnrollmentManagementPanel(
-                              key: ValueKey('enrollment-${studyRoom.id}'),
-                              studyRoom: studyRoom,
-                              classService: widget.classService,
-                              studentService: widget.studentService,
-                              enrollmentService: widget.enrollmentService,
+                          : Column(
+                              children: [
+                                Expanded(
+                                  child: _EnrollmentManagementPanel(
+                                    key: ValueKey('enrollment-${studyRoom.id}'),
+                                    studyRoom: studyRoom,
+                                    classService: widget.classService,
+                                    studentService: widget.studentService,
+                                    enrollmentService: widget.enrollmentService,
+                                  ),
+                                ),
+                                const SizedBox(height: 16),
+                                Expanded(
+                                  child: _ClassroomLayoutPanel(
+                                    key: ValueKey('layout-${studyRoom.id}'),
+                                    studyRoom: studyRoom,
+                                    classService: widget.classService,
+                                    enrollmentService: widget.enrollmentService,
+                                    layoutService:
+                                        widget.classroomLayoutService,
+                                  ),
+                                ),
+                              ],
                             ),
                     ),
                     const SizedBox(width: 16),
@@ -2080,6 +2104,405 @@ class _EnrollmentData {
   final List<ManagedClass> classes;
   final List<ManagedStudent> students;
   final List<ManagedStudent> enrolled;
+}
+
+class _ClassroomLayoutPanel extends StatefulWidget {
+  const _ClassroomLayoutPanel({
+    super.key,
+    required this.studyRoom,
+    required this.classService,
+    required this.enrollmentService,
+    required this.layoutService,
+  });
+
+  final StudyRoomSummary studyRoom;
+  final ClassManagementService classService;
+  final EnrollmentManagementService enrollmentService;
+  final ClassroomLayoutService layoutService;
+
+  @override
+  State<_ClassroomLayoutPanel> createState() => _ClassroomLayoutPanelState();
+}
+
+class _ClassroomLayoutPanelState extends State<_ClassroomLayoutPanel> {
+  late Future<_ClassroomLayoutData> _dataFuture;
+  String? _selectedClassId;
+  var _saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _dataFuture = _loadData();
+  }
+
+  Future<_ClassroomLayoutData> _loadData() async {
+    final classes = await widget.classService.fetchClasses(widget.studyRoom.id);
+    final selectedClassId = _selectedClassId ?? classes.firstOrNull?.id;
+    _selectedClassId = selectedClassId;
+    if (selectedClassId == null) {
+      return const _ClassroomLayoutData(
+        classes: [],
+        enrolled: [],
+        layout: null,
+      );
+    }
+    final enrolled = await widget.enrollmentService.fetchClassStudents(
+      selectedClassId,
+    );
+    final layout = await widget.layoutService.fetchLayout(selectedClassId);
+    return _ClassroomLayoutData(
+      classes: classes,
+      enrolled: enrolled,
+      layout: layout,
+    );
+  }
+
+  Future<void> _addSeat(_ClassroomLayoutData data) async {
+    final layout = data.layout;
+    if (layout == null) return;
+    final nextIndex = layout.seats.length;
+    final column = nextIndex % 3;
+    final row = nextIndex ~/ 3;
+    final nextSeat = ClassroomSeat(
+      id: null,
+      label: '${nextIndex + 1}',
+      deskX: 0.18 + column * 0.28,
+      deskY: 0.18 + row * 0.22,
+      seatX: 0.18 + column * 0.28,
+      seatY: 0.28 + row * 0.22,
+      rotationDegrees: 0,
+      displayOrder: nextIndex,
+    );
+    await _saveLayout(layout.copyWith(seats: [...layout.seats, nextSeat]));
+  }
+
+  Future<void> _createDefaultSeats(_ClassroomLayoutData data) async {
+    final layout = data.layout;
+    if (layout == null) return;
+    final seats = [
+      for (var index = 0; index < 6; index++)
+        ClassroomSeat(
+          id: null,
+          label: '${index + 1}',
+          deskX: 0.18 + (index % 3) * 0.28,
+          deskY: 0.18 + (index ~/ 3) * 0.26,
+          seatX: 0.18 + (index % 3) * 0.28,
+          seatY: 0.29 + (index ~/ 3) * 0.26,
+          rotationDegrees: 0,
+          displayOrder: index,
+        ),
+    ];
+    await _saveLayout(layout.copyWith(seats: seats));
+  }
+
+  Future<void> _saveLayout(ClassroomLayout layout) async {
+    final classId = _selectedClassId;
+    if (classId == null) return;
+    setState(() => _saving = true);
+    try {
+      await widget.layoutService.saveLayout(classId: classId, layout: layout);
+      if (mounted) setState(() => _dataFuture = _loadData());
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _assignStudent({
+    required ClassroomLayout layout,
+    required String seatId,
+    required String studentId,
+  }) async {
+    final classId = _selectedClassId;
+    if (classId == null) return;
+    final nextAssignments = [
+      for (final assignment in layout.assignments)
+        if (assignment.seatId != seatId && assignment.studentId != studentId)
+          SeatAssignmentInput(
+            seatId: assignment.seatId,
+            studentId: assignment.studentId,
+          ),
+      SeatAssignmentInput(seatId: seatId, studentId: studentId),
+    ];
+    await _saveAssignments(classId, nextAssignments);
+  }
+
+  Future<void> _clearSeat({
+    required ClassroomLayout layout,
+    required String seatId,
+  }) async {
+    final classId = _selectedClassId;
+    if (classId == null) return;
+    final nextAssignments = [
+      for (final assignment in layout.assignments)
+        if (assignment.seatId != seatId)
+          SeatAssignmentInput(
+            seatId: assignment.seatId,
+            studentId: assignment.studentId,
+          ),
+    ];
+    await _saveAssignments(classId, nextAssignments);
+  }
+
+  Future<void> _saveAssignments(
+    String classId,
+    List<SeatAssignmentInput> assignments,
+  ) async {
+    setState(() => _saving = true);
+    try {
+      await widget.layoutService.saveAssignments(
+        classId: classId,
+        assignments: assignments,
+      );
+      if (mounted) setState(() => _dataFuture = _loadData());
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('좌석 배치', style: Theme.of(context).textTheme.titleLarge),
+            const SizedBox(height: 4),
+            Text(widget.studyRoom.name),
+            const SizedBox(height: 12),
+            Expanded(
+              child: FutureBuilder<_ClassroomLayoutData>(
+                future: _dataFuture,
+                builder: (context, snapshot) {
+                  if (snapshot.connectionState != ConnectionState.done) {
+                    return const Center(child: CircularProgressIndicator());
+                  }
+                  if (snapshot.hasError) {
+                    return Text('좌석 배치를 불러오지 못했습니다. ${snapshot.error}');
+                  }
+                  final data = snapshot.requireData;
+                  if (data.classes.isEmpty) {
+                    return const Center(child: Text('수업을 먼저 생성해 주세요.'));
+                  }
+                  final layout = data.layout;
+                  if (layout == null) {
+                    return const Center(child: Text('좌석 배치 정보가 없습니다.'));
+                  }
+                  final assignedStudentIds = layout.assignments
+                      .map((assignment) => assignment.studentId)
+                      .toSet();
+                  final unassigned = data.enrolled
+                      .where(
+                        (student) => !assignedStudentIds.contains(student.id),
+                      )
+                      .toList();
+                  final assignmentBySeat = {
+                    for (final assignment in layout.assignments)
+                      assignment.seatId: assignment,
+                  };
+
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      DropdownButtonFormField<String>(
+                        initialValue: _selectedClassId,
+                        decoration: const InputDecoration(
+                          labelText: '수업',
+                          border: OutlineInputBorder(),
+                        ),
+                        items: [
+                          for (final classRoom in data.classes)
+                            DropdownMenuItem(
+                              value: classRoom.id,
+                              child: Text(classRoom.name),
+                            ),
+                        ],
+                        onChanged: _saving
+                            ? null
+                            : (classId) {
+                                setState(() {
+                                  _selectedClassId = classId;
+                                  _dataFuture = _loadData();
+                                });
+                              },
+                      ),
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          FilledButton.tonalIcon(
+                            onPressed: _saving ? null : () => _addSeat(data),
+                            icon: const Icon(Icons.event_seat_outlined),
+                            label: const Text('좌석 추가'),
+                          ),
+                          OutlinedButton.icon(
+                            onPressed: _saving || layout.seats.isNotEmpty
+                                ? null
+                                : () => _createDefaultSeats(data),
+                            icon: const Icon(Icons.grid_view_outlined),
+                            label: const Text('기본 6석'),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          for (final student in unassigned)
+                            Draggable<ManagedStudent>(
+                              data: student,
+                              feedback: Material(
+                                color: Colors.transparent,
+                                child: Chip(label: Text(student.name)),
+                              ),
+                              childWhenDragging: Opacity(
+                                opacity: 0.35,
+                                child: Chip(label: Text(student.name)),
+                              ),
+                              child: Chip(label: Text(student.name)),
+                            ),
+                          if (unassigned.isEmpty)
+                            const Chip(label: Text('미배정 학생 없음')),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Expanded(
+                        child: layout.seats.isEmpty
+                            ? const Center(child: Text('좌석을 추가해 주세요.'))
+                            : GridView.builder(
+                                gridDelegate:
+                                    const SliverGridDelegateWithFixedCrossAxisCount(
+                                      crossAxisCount: 3,
+                                      childAspectRatio: 1.15,
+                                      crossAxisSpacing: 8,
+                                      mainAxisSpacing: 8,
+                                    ),
+                                itemCount: layout.seats.length,
+                                itemBuilder: (context, index) {
+                                  final seat = layout.seats[index];
+                                  final seatId = seat.id;
+                                  final assignment = seatId == null
+                                      ? null
+                                      : assignmentBySeat[seatId];
+                                  return DragTarget<ManagedStudent>(
+                                    onAcceptWithDetails:
+                                        seatId == null || _saving
+                                        ? null
+                                        : (details) => _assignStudent(
+                                            layout: layout,
+                                            seatId: seatId,
+                                            studentId: details.data.id,
+                                          ),
+                                    builder: (context, candidates, rejected) {
+                                      return DecoratedBox(
+                                        decoration: BoxDecoration(
+                                          color: candidates.isEmpty
+                                              ? const Color(0xFFF8FAFC)
+                                              : Theme.of(
+                                                  context,
+                                                ).colorScheme.primaryContainer,
+                                          border: Border.all(
+                                            color: candidates.isEmpty
+                                                ? const Color(0xFFD9E1E8)
+                                                : Theme.of(
+                                                    context,
+                                                  ).colorScheme.primary,
+                                          ),
+                                          borderRadius: BorderRadius.circular(
+                                            8,
+                                          ),
+                                        ),
+                                        child: Padding(
+                                          padding: const EdgeInsets.all(8),
+                                          child: Column(
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.start,
+                                            children: [
+                                              Row(
+                                                children: [
+                                                  const Icon(
+                                                    Icons.event_seat_outlined,
+                                                    size: 18,
+                                                  ),
+                                                  const SizedBox(width: 6),
+                                                  Expanded(
+                                                    child: Text(
+                                                      '좌석 ${seat.label}',
+                                                      overflow:
+                                                          TextOverflow.ellipsis,
+                                                    ),
+                                                  ),
+                                                  if (assignment != null)
+                                                    IconButton(
+                                                      tooltip: '비우기',
+                                                      visualDensity:
+                                                          VisualDensity.compact,
+                                                      icon: const Icon(
+                                                        Icons.close,
+                                                        size: 18,
+                                                      ),
+                                                      onPressed:
+                                                          _saving ||
+                                                              seatId == null
+                                                          ? null
+                                                          : () => _clearSeat(
+                                                              layout: layout,
+                                                              seatId: seatId,
+                                                            ),
+                                                    ),
+                                                ],
+                                              ),
+                                              const Spacer(),
+                                              Text(
+                                                assignment?.studentName ??
+                                                    '학생을 놓아 배정',
+                                                maxLines: 2,
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
+                                              if (assignment
+                                                      ?.studentCode
+                                                      .isNotEmpty ==
+                                                  true)
+                                                Text(
+                                                  assignment!.studentCode,
+                                                  style: Theme.of(
+                                                    context,
+                                                  ).textTheme.bodySmall,
+                                                ),
+                                            ],
+                                          ),
+                                        ),
+                                      );
+                                    },
+                                  );
+                                },
+                              ),
+                      ),
+                    ],
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ClassroomLayoutData {
+  const _ClassroomLayoutData({
+    required this.classes,
+    required this.enrolled,
+    required this.layout,
+  });
+
+  final List<ManagedClass> classes;
+  final List<ManagedStudent> enrolled;
+  final ClassroomLayout? layout;
 }
 
 class _AdminDashboardPanel extends StatefulWidget {

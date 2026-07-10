@@ -89,7 +89,11 @@ Edge API 경로는 REST 스타일로 간결하고 명확하게 둔다.
 
 - `GET /classes/{classId}/classroom-layout`: 수업별 교실 배치 조회
 - `PUT /classes/{classId}/classroom-layout`: 책상/의자 배치 저장
+  - Body: `{ "name": "기본 배치", "canvasWidth": 1000, "canvasHeight": 700, "seats": [...] }`
+  - 좌석 좌표는 `0..1` 비율 값으로 저장하고, 기존 좌석 중 요청에 없는 좌석은 비활성화한다.
 - `PUT /classes/{classId}/seat-assignments`: 학생 좌석 사전 배정 저장
+  - Body: `{ "assignments": [{ "seatId": "...", "studentId": "..." }] }`
+  - 해당 수업에 등록된 학생만 배정할 수 있고, 좌석/학생 중복 배정은 거부한다.
 - `POST /classes/{classId}/classroom-layout/copy`: 기본 수업 배치도를 보강 수업으로 복사
 
 ### enrollments

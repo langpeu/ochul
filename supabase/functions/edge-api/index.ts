@@ -191,6 +191,25 @@ async function routeEdgeRequest(
     }
   }
 
+  const classLayoutMatch = path.match(
+    /^\/classes\/([^/]+)\/classroom-layout$/,
+  );
+  if (classLayoutMatch) {
+    if (method === "GET") {
+      return await getClassroomLayout(classLayoutMatch[1], context);
+    }
+    if (method === "PUT") {
+      return await saveClassroomLayout(classLayoutMatch[1], body, context);
+    }
+  }
+
+  const seatAssignmentsMatch = path.match(
+    /^\/classes\/([^/]+)\/seat-assignments$/,
+  );
+  if (method === "PUT" && seatAssignmentsMatch) {
+    return await saveSeatAssignments(seatAssignmentsMatch[1], body, context);
+  }
+
   const studyRoomAuditLogsMatch = path.match(
     /^\/study-rooms\/([^/]+)\/audit-logs$/,
   );
@@ -918,6 +937,228 @@ async function deleteClass(
   });
 
   return { ok: true };
+}
+
+async function getClassroomLayout(
+  classId: string,
+  { db, teacher }: AppContext,
+): Promise<Record<string, unknown>> {
+  const activeTeacher = requireTeacherProfile(teacher);
+  assertUuid(classId, "수업 정보가 올바르지 않습니다.");
+  const classRoom = await readAccessibleClass(db, classId, activeTeacher, {
+    allowAdmin: true,
+  });
+  const layout = await readActiveClassroomLayout(db, classId);
+  if (!layout) {
+    return {
+      ok: true,
+      layout: {
+        id: null,
+        classId,
+        name: "기본 배치",
+        canvasWidth: 1000,
+        canvasHeight: 700,
+        seats: [],
+        assignments: [],
+      },
+    };
+  }
+  return {
+    ok: true,
+    layout: await formatClassroomLayout(db, layout, classRoom),
+  };
+}
+
+async function saveClassroomLayout(
+  classId: string,
+  body: Record<string, unknown>,
+  { db, teacher }: AppContext,
+): Promise<Record<string, unknown>> {
+  const activeTeacher = requireTeacherProfile(teacher);
+  assertUuid(classId, "수업 정보가 올바르지 않습니다.");
+  const classRoom = await readAccessibleClass(db, classId, activeTeacher, {
+    allowAdmin: false,
+  });
+
+  const name = stringValue(body.name) || "기본 배치";
+  const canvasWidth = normalizePositiveNumber(body.canvasWidth, 1000);
+  const canvasHeight = normalizePositiveNumber(body.canvasHeight, 700);
+  const seats = normalizeClassroomSeats(body.seats);
+
+  const existing = await readActiveClassroomLayout(db, classId);
+  const layout = existing
+    ? await updateClassroomLayoutRow(db, existing.id, {
+      name,
+      canvasWidth,
+      canvasHeight,
+    })
+    : await createClassroomLayoutRow(db, classRoom, {
+      name,
+      canvasWidth,
+      canvasHeight,
+      teacherId: activeTeacher.id,
+    });
+
+  const incomingIds = seats
+    .map((seat) => seat.id)
+    .filter((id): id is string => id !== null);
+  let inactiveSeatQuery = db
+    .from("classroom_seats")
+    .update({ active: false })
+    .eq("classroom_layout_id", layout.id);
+  if (incomingIds.length > 0) {
+    inactiveSeatQuery = inactiveSeatQuery.not(
+      "id",
+      "in",
+      `(${incomingIds.join(",")})`,
+    );
+  }
+  const { error: inactiveSeatError } = await inactiveSeatQuery;
+
+  if (inactiveSeatError) {
+    throw new EdgeApiError(500, "좌석 정리에 실패했습니다.");
+  }
+
+  const savedSeats = [];
+  for (const seat of seats) {
+    if (seat.id) {
+      const { data, error } = await db
+        .from("classroom_seats")
+        .update({
+          label: seat.label,
+          desk_x: seat.deskX,
+          desk_y: seat.deskY,
+          seat_x: seat.seatX,
+          seat_y: seat.seatY,
+          rotation_degrees: seat.rotationDegrees,
+          display_order: seat.displayOrder,
+          active: true,
+        })
+        .eq("id", seat.id)
+        .eq("classroom_layout_id", layout.id)
+        .select(
+          "id, label, desk_x, desk_y, seat_x, seat_y, rotation_degrees, display_order",
+        )
+        .single();
+      if (error) throw new EdgeApiError(500, "좌석 수정에 실패했습니다.");
+      savedSeats.push(data);
+    } else {
+      const { data, error } = await db
+        .from("classroom_seats")
+        .insert({
+          organization_id: classRoom.organization_id,
+          study_room_id: classRoom.study_room_id,
+          classroom_layout_id: layout.id,
+          label: seat.label,
+          desk_x: seat.deskX,
+          desk_y: seat.deskY,
+          seat_x: seat.seatX,
+          seat_y: seat.seatY,
+          rotation_degrees: seat.rotationDegrees,
+          display_order: seat.displayOrder,
+          active: true,
+        })
+        .select(
+          "id, label, desk_x, desk_y, seat_x, seat_y, rotation_degrees, display_order",
+        )
+        .single();
+      if (error) throw new EdgeApiError(500, "좌석 생성에 실패했습니다.");
+      savedSeats.push(data);
+    }
+  }
+
+  let staleAssignmentQuery = db
+    .from("student_seat_assignments")
+    .delete()
+    .eq("classroom_layout_id", layout.id);
+  const savedSeatIds = savedSeats.map((seat) => String(seat.id));
+  if (savedSeatIds.length > 0) {
+    staleAssignmentQuery = staleAssignmentQuery.not(
+      "classroom_seat_id",
+      "in",
+      `(${savedSeatIds.join(",")})`,
+    );
+  }
+  const { error: staleAssignmentError } = await staleAssignmentQuery;
+  if (staleAssignmentError) {
+    throw new EdgeApiError(500, "삭제된 좌석의 배정 정리에 실패했습니다.");
+  }
+
+  await createClassroomLayoutAuditLog(db, {
+    organizationId: classRoom.organization_id,
+    studyRoomId: classRoom.study_room_id,
+    actorTeacherId: activeTeacher.id,
+    classId,
+    classroomLayoutId: layout.id,
+    action: existing ? "updated" : "created",
+    title: existing ? "교실 배치 수정" : "교실 배치 생성",
+    summary:
+      `${classRoom.name} 수업의 좌석 ${savedSeats.length}개를 저장했습니다.`,
+  });
+
+  return {
+    ok: true,
+    layout: await formatClassroomLayout(db, layout, classRoom),
+  };
+}
+
+async function saveSeatAssignments(
+  classId: string,
+  body: Record<string, unknown>,
+  { db, teacher }: AppContext,
+): Promise<Record<string, unknown>> {
+  const activeTeacher = requireTeacherProfile(teacher);
+  assertUuid(classId, "수업 정보가 올바르지 않습니다.");
+  const classRoom = await readAccessibleClass(db, classId, activeTeacher, {
+    allowAdmin: false,
+  });
+  const layout = await readActiveClassroomLayout(db, classId);
+  if (!layout) throw new EdgeApiError(400, "교실 배치를 먼저 저장해 주세요.");
+  const assignments = normalizeSeatAssignments(body.assignments);
+
+  await assertSeatAssignmentScope(db, layout.id, classRoom, assignments);
+
+  const { error: deleteError } = await db
+    .from("student_seat_assignments")
+    .delete()
+    .eq("classroom_layout_id", layout.id);
+  if (deleteError) {
+    throw new EdgeApiError(500, "기존 좌석 배정 정리에 실패했습니다.");
+  }
+
+  if (assignments.length > 0) {
+    const { error: insertError } = await db
+      .from("student_seat_assignments")
+      .insert(
+        assignments.map((assignment) => ({
+          classroom_layout_id: layout.id,
+          classroom_seat_id: assignment.seatId,
+          student_id: assignment.studentId,
+          assigned_by_teacher_id: activeTeacher.id,
+          active: true,
+        })),
+      );
+    if (insertError) {
+      throw new EdgeApiError(500, "좌석 배정 저장에 실패했습니다.");
+    }
+  }
+
+  await createClassroomLayoutAuditLog(db, {
+    organizationId: classRoom.organization_id,
+    studyRoomId: classRoom.study_room_id,
+    actorTeacherId: activeTeacher.id,
+    classId,
+    classroomLayoutId: layout.id,
+    action: "assigned",
+    title: "좌석 배정",
+    summary:
+      `${classRoom.name} 수업의 학생 좌석 ${assignments.length}건을 저장했습니다.`,
+  });
+
+  return {
+    ok: true,
+    layout: await formatClassroomLayout(db, layout, classRoom),
+  };
 }
 
 async function listClassStudents(
@@ -2652,6 +2893,155 @@ async function readAccessibleClass(
   return data;
 }
 
+async function readActiveClassroomLayout(
+  db: SupabaseClient,
+  classId: string,
+) {
+  const { data, error } = await db
+    .from("classroom_layouts")
+    .select(
+      "id, organization_id, study_room_id, class_id, name, canvas_width, canvas_height, version",
+    )
+    .eq("class_id", classId)
+    .eq("active", true)
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw new EdgeApiError(500, "교실 배치 조회에 실패했습니다.");
+  return data;
+}
+
+async function createClassroomLayoutRow(
+  db: SupabaseClient,
+  classRoom: Record<string, unknown>,
+  input: {
+    name: string;
+    canvasWidth: number;
+    canvasHeight: number;
+    teacherId: string;
+  },
+) {
+  const { data, error } = await db
+    .from("classroom_layouts")
+    .insert({
+      organization_id: classRoom.organization_id,
+      study_room_id: classRoom.study_room_id,
+      class_id: classRoom.id,
+      name: input.name,
+      canvas_width: input.canvasWidth,
+      canvas_height: input.canvasHeight,
+      created_by_teacher_id: input.teacherId,
+      active: true,
+    })
+    .select(
+      "id, organization_id, study_room_id, class_id, name, canvas_width, canvas_height, version",
+    )
+    .single();
+  if (error) throw new EdgeApiError(500, "교실 배치 생성에 실패했습니다.");
+  return data;
+}
+
+async function updateClassroomLayoutRow(
+  db: SupabaseClient,
+  layoutId: string,
+  input: { name: string; canvasWidth: number; canvasHeight: number },
+) {
+  const { data, error } = await db
+    .from("classroom_layouts")
+    .update({
+      name: input.name,
+      canvas_width: input.canvasWidth,
+      canvas_height: input.canvasHeight,
+    })
+    .eq("id", layoutId)
+    .select(
+      "id, organization_id, study_room_id, class_id, name, canvas_width, canvas_height, version",
+    )
+    .single();
+  if (error) throw new EdgeApiError(500, "교실 배치 수정에 실패했습니다.");
+  return data;
+}
+
+async function formatClassroomLayout(
+  db: SupabaseClient,
+  layout: Record<string, unknown>,
+  classRoom: Record<string, unknown>,
+) {
+  const { data: seats, error: seatsError } = await db
+    .from("classroom_seats")
+    .select(
+      "id, label, desk_x, desk_y, seat_x, seat_y, rotation_degrees, display_order",
+    )
+    .eq("classroom_layout_id", layout.id)
+    .eq("active", true)
+    .order("display_order", { ascending: true });
+  if (seatsError) throw new EdgeApiError(500, "좌석 조회에 실패했습니다.");
+
+  const { data: assignments, error: assignmentsError } = await db
+    .from("student_seat_assignments")
+    .select("classroom_seat_id, student_id, students!inner(name, student_code)")
+    .eq("classroom_layout_id", layout.id)
+    .eq("active", true);
+  if (assignmentsError) {
+    throw new EdgeApiError(500, "좌석 배정 조회에 실패했습니다.");
+  }
+
+  return {
+    id: layout.id,
+    classId: classRoom.id,
+    name: layout.name,
+    canvasWidth: Number(layout.canvas_width ?? 1000),
+    canvasHeight: Number(layout.canvas_height ?? 700),
+    seats: (seats ?? []).map(formatClassroomSeat),
+    assignments: (assignments ?? []).map(formatSeatAssignment),
+  };
+}
+
+async function assertSeatAssignmentScope(
+  db: SupabaseClient,
+  layoutId: string,
+  classRoom: Record<string, unknown>,
+  assignments: Array<{ seatId: string; studentId: string }>,
+) {
+  if (assignments.length === 0) return;
+  const seatIds = [...new Set(assignments.map((item) => item.seatId))];
+  const studentIds = [...new Set(assignments.map((item) => item.studentId))];
+  if (
+    seatIds.length !== assignments.length ||
+    studentIds.length !== assignments.length
+  ) {
+    throw new EdgeApiError(400, "좌석 또는 학생이 중복 배정되었습니다.");
+  }
+
+  const { data: seats, error: seatsError } = await db
+    .from("classroom_seats")
+    .select("id")
+    .eq("classroom_layout_id", layoutId)
+    .eq("active", true)
+    .in("id", seatIds);
+  if (seatsError) throw new EdgeApiError(500, "좌석 범위 확인에 실패했습니다.");
+  if ((seats ?? []).length !== seatIds.length) {
+    throw new EdgeApiError(400, "좌석 정보가 올바르지 않습니다.");
+  }
+
+  const { data: classStudents, error: studentsError } = await db
+    .from("class_students")
+    .select("student_id")
+    .eq("class_id", classRoom.id)
+    .eq("active", true)
+    .in("student_id", studentIds);
+  if (studentsError) {
+    throw new EdgeApiError(500, "수강 학생 범위 확인에 실패했습니다.");
+  }
+  if ((classStudents ?? []).length !== studentIds.length) {
+    throw new EdgeApiError(
+      400,
+      "수업에 등록된 학생만 좌석에 배정할 수 있습니다.",
+    );
+  }
+}
+
 async function readAccessiblePaymentPeriod(
   db: SupabaseClient,
   paymentPeriodId: string,
@@ -3301,6 +3691,35 @@ async function createStudyRoomAuditLog(
   if (error) throw new EdgeApiError(500, "사용 히스토리 기록에 실패했습니다.");
 }
 
+async function createClassroomLayoutAuditLog(
+  db: SupabaseClient,
+  input: {
+    organizationId: string;
+    studyRoomId: string;
+    actorTeacherId: string;
+    classId: string;
+    classroomLayoutId: string;
+    action: "created" | "updated" | "assigned";
+    title: string;
+    summary: string;
+  },
+) {
+  const { error } = await db.from("audit_logs").insert({
+    organization_id: input.organizationId,
+    study_room_id: input.studyRoomId,
+    actor_teacher_id: input.actorTeacherId,
+    class_id: input.classId,
+    classroom_layout_id: input.classroomLayoutId,
+    entity_type: "classroom_layout",
+    entity_id: input.classroomLayoutId,
+    action: input.action,
+    title: input.title,
+    summary: input.summary,
+  });
+
+  if (error) throw new EdgeApiError(500, "사용 히스토리 기록에 실패했습니다.");
+}
+
 async function createClassStudentAuditLog(
   db: SupabaseClient,
   input: {
@@ -3600,6 +4019,86 @@ function normalizeAmount(value: unknown) {
   return amount;
 }
 
+function normalizePositiveNumber(value: unknown, fallback: number) {
+  const amount = Number(value ?? fallback);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new EdgeApiError(400, "크기 값이 올바르지 않습니다.");
+  }
+  return amount;
+}
+
+function normalizeCoordinate(value: unknown, message: string) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount) || amount < 0 || amount > 1) {
+    throw new EdgeApiError(400, message);
+  }
+  return amount;
+}
+
+function normalizeClassroomSeats(value: unknown) {
+  if (!Array.isArray(value)) {
+    throw new EdgeApiError(400, "좌석 정보가 필요합니다.");
+  }
+  return value.map((item, index) => {
+    if (!item || typeof item !== "object") {
+      throw new EdgeApiError(400, "좌석 정보가 올바르지 않습니다.");
+    }
+    const input = item as Record<string, unknown>;
+    const id = nullableString(input.id);
+    if (id && !uuidPattern.test(id)) {
+      throw new EdgeApiError(400, "좌석 정보가 올바르지 않습니다.");
+    }
+    const displayOrder = Number(input.displayOrder ?? index);
+    if (!Number.isInteger(displayOrder) || displayOrder < 0) {
+      throw new EdgeApiError(400, "좌석 순서가 올바르지 않습니다.");
+    }
+    const rotationDegrees = Number(input.rotationDegrees ?? 0);
+    if (!Number.isFinite(rotationDegrees)) {
+      throw new EdgeApiError(400, "좌석 회전 값이 올바르지 않습니다.");
+    }
+    return {
+      id,
+      label: nullableString(input.label) ?? `${index + 1}`,
+      deskX: normalizeCoordinate(
+        input.deskX,
+        "책상 X 좌표가 올바르지 않습니다.",
+      ),
+      deskY: normalizeCoordinate(
+        input.deskY,
+        "책상 Y 좌표가 올바르지 않습니다.",
+      ),
+      seatX: normalizeCoordinate(
+        input.seatX,
+        "의자 X 좌표가 올바르지 않습니다.",
+      ),
+      seatY: normalizeCoordinate(
+        input.seatY,
+        "의자 Y 좌표가 올바르지 않습니다.",
+      ),
+      rotationDegrees,
+      displayOrder,
+    };
+  });
+}
+
+function normalizeSeatAssignments(value: unknown) {
+  if (!Array.isArray(value)) {
+    throw new EdgeApiError(400, "좌석 배정 정보가 필요합니다.");
+  }
+  return value.map((item) => {
+    if (!item || typeof item !== "object") {
+      throw new EdgeApiError(400, "좌석 배정 정보가 올바르지 않습니다.");
+    }
+    const input = item as Record<string, unknown>;
+    const seatId = stringValue(input.seatId);
+    const studentId = stringValue(input.studentId);
+    if (!uuidPattern.test(seatId) || !uuidPattern.test(studentId)) {
+      throw new EdgeApiError(400, "좌석 배정 정보가 올바르지 않습니다.");
+    }
+    return { seatId, studentId };
+  });
+}
+
 function normalizeTime(value: unknown, message: string) {
   const time = stringValue(value);
   if (!/^\d{2}:\d{2}$/.test(time)) throw new EdgeApiError(400, message);
@@ -3636,6 +4135,29 @@ function formatStudyRoomSummary(studyRoom: Record<string, unknown>) {
     name: studyRoom.name,
     description: studyRoom.description,
     createdAt: studyRoom.created_at,
+  };
+}
+
+function formatClassroomSeat(seat: Record<string, unknown>) {
+  return {
+    id: seat.id,
+    label: seat.label,
+    deskX: Number(seat.desk_x ?? 0),
+    deskY: Number(seat.desk_y ?? 0),
+    seatX: Number(seat.seat_x ?? 0),
+    seatY: Number(seat.seat_y ?? 0),
+    rotationDegrees: Number(seat.rotation_degrees ?? 0),
+    displayOrder: seat.display_order,
+  };
+}
+
+function formatSeatAssignment(row: Record<string, unknown>) {
+  const student = normalizeJoinedObject(row.students);
+  return {
+    seatId: row.classroom_seat_id,
+    studentId: row.student_id,
+    studentName: student.name,
+    studentCode: student.student_code,
   };
 }
 
