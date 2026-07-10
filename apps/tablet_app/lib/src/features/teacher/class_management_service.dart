@@ -91,6 +91,28 @@ class ClassManagementService {
     );
   }
 
+  Future<ManagedClassSession> createClassSession({
+    required String classId,
+    required String sessionDate,
+    required String startsAt,
+    required String endsAt,
+    String status = 'scheduled',
+    String reason = '',
+  }) async {
+    final data = await edgeClient.call(
+      '/classes/$classId/sessions',
+      method: EdgeHttpMethod.post,
+      body: <String, dynamic>{
+        'sessionDate': sessionDate,
+        if (startsAt.isNotEmpty) 'startsAt': startsAt,
+        if (endsAt.isNotEmpty) 'endsAt': endsAt,
+        'status': status,
+        if (reason.isNotEmpty) 'reason': reason,
+      },
+    );
+    return _readClassSession(data, '수업 회차 생성 응답이 올바르지 않습니다.');
+  }
+
   Future<int> cancelTodaySession({
     required String classId,
     required String sessionDate,
@@ -162,6 +184,17 @@ class ClassManagementService {
     }
     throw ClassManagementException(message);
   }
+
+  ManagedClassSession _readClassSession(
+    Map<String, dynamic> data,
+    String message,
+  ) {
+    final sessionJson = data['session'];
+    if (sessionJson is Map<String, dynamic>) {
+      return ManagedClassSession.fromJson(sessionJson);
+    }
+    throw ClassManagementException(message);
+  }
 }
 
 class ManagedClass {
@@ -205,6 +238,38 @@ class ManagedClass {
   final String scheduleText;
   final List<ManagedClassSchedule> schedules;
   final bool active;
+}
+
+class ManagedClassSession {
+  const ManagedClassSession({
+    required this.id,
+    required this.classId,
+    required this.className,
+    required this.sessionDate,
+    required this.startsAt,
+    required this.endsAt,
+    required this.status,
+  });
+
+  factory ManagedClassSession.fromJson(Map<String, dynamic> json) {
+    return ManagedClassSession(
+      id: json['id'] as String? ?? '',
+      classId: json['classId'] as String? ?? '',
+      className: json['className'] as String? ?? '수업',
+      sessionDate: json['sessionDate'] as String? ?? '',
+      startsAt: json['startsAt'] as String? ?? '',
+      endsAt: json['endsAt'] as String? ?? '',
+      status: json['status'] as String? ?? 'scheduled',
+    );
+  }
+
+  final String id;
+  final String classId;
+  final String className;
+  final String sessionDate;
+  final String startsAt;
+  final String endsAt;
+  final String status;
 }
 
 class ManagedClassSchedule {

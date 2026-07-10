@@ -357,6 +357,11 @@ async function routeEdgeRequest(
     return await openClassSession(openClassSessionMatch[1], context);
   }
 
+  const classSessionsMatch = path.match(/^\/classes\/([^/]+)\/sessions$/);
+  if (method === "POST" && classSessionsMatch) {
+    return await createClassSession(classSessionsMatch[1], body, context);
+  }
+
   const cancelClassSessionMatch = path.match(
     /^\/classes\/([^/]+)\/sessions\/cancel-today$/,
   );
@@ -1651,6 +1656,89 @@ async function openClassSession(
 
   return {
     ok: true,
+    session: formatClassSession(session, classRoom),
+  };
+}
+
+async function createClassSession(
+  classId: string,
+  body: Record<string, unknown>,
+  { db, teacher }: AppContext,
+): Promise<Record<string, unknown>> {
+  const activeTeacher = requireTeacherProfile(teacher);
+  assertUuid(classId, "수업 정보가 올바르지 않습니다.");
+  const classRoom = await readAccessibleClass(db, classId, activeTeacher, {
+    allowAdmin: false,
+  });
+  const sessionDate = stringValue(body.sessionDate) || todayDateString();
+  const status = normalizeClassSessionStatus(body.status);
+  const reason = nullableString(body.reason);
+  assertDate(sessionDate, "수업 회차 날짜가 올바르지 않습니다.");
+
+  const { data: existing, error: existingError } = await db
+    .from("class_sessions")
+    .select("id, session_date, starts_at, ends_at, status")
+    .eq("class_id", classId)
+    .eq("session_date", sessionDate)
+    .maybeSingle();
+
+  if (existingError) {
+    throw new EdgeApiError(500, "수업 회차 조회에 실패했습니다.");
+  }
+  if (existing) {
+    return {
+      ok: true,
+      alreadyExists: true,
+      session: formatClassSession(existing, classRoom),
+    };
+  }
+
+  const schedule = await readScheduleForSessionDate(db, classId, sessionDate);
+  const startsAt = nullableString(body.startsAt)
+    ? normalizeTime(body.startsAt, "수업 시작 시간이 올바르지 않습니다.")
+    : trimSeconds(schedule.starts_at);
+  const endsAt = nullableString(body.endsAt)
+    ? normalizeTime(body.endsAt, "수업 종료 시간이 올바르지 않습니다.")
+    : trimSeconds(schedule.ends_at);
+  if (startsAt >= endsAt) {
+    throw new EdgeApiError(400, "수업 종료 시간은 시작 시간 이후여야 합니다.");
+  }
+
+  const { data: session, error: sessionError } = await db
+    .from("class_sessions")
+    .insert({
+      organization_id: classRoom.organization_id,
+      study_room_id: classRoom.study_room_id,
+      class_id: classId,
+      class_schedule_id: schedule.id,
+      session_date: sessionDate,
+      starts_at: toKstIso(sessionDate, startsAt),
+      ends_at: toKstIso(sessionDate, endsAt),
+      kind: classRoom.class_kind,
+      status,
+      change_reason: reason,
+      opened_by_teacher_id: activeTeacher.id,
+    })
+    .select("id, session_date, starts_at, ends_at, status")
+    .single();
+
+  if (sessionError) {
+    throw new EdgeApiError(500, "수업 회차 생성에 실패했습니다.");
+  }
+
+  await createClassSessionAuditLog(db, {
+    organizationId: classRoom.organization_id,
+    studyRoomId: classRoom.study_room_id,
+    actorTeacherId: activeTeacher.id,
+    classId,
+    classSessionId: session.id,
+    title: "수업 회차 생성",
+    summary: `${classRoom.name} ${sessionDate} 수업 회차를 생성했습니다.`,
+  });
+
+  return {
+    ok: true,
+    alreadyExists: false,
     session: formatClassSession(session, classRoom),
   };
 }
@@ -3537,6 +3625,27 @@ async function readClassSessionForDate(
   return data;
 }
 
+async function readScheduleForSessionDate(
+  db: SupabaseClient,
+  classId: string,
+  sessionDate: string,
+) {
+  const dayOfWeek = dayOfWeekFromDateString(sessionDate);
+  const { data, error } = await db
+    .from("class_schedules")
+    .select("id, starts_at, ends_at")
+    .eq("class_id", classId)
+    .eq("active", true)
+    .eq("day_of_week", dayOfWeek)
+    .maybeSingle();
+
+  if (error) throw new EdgeApiError(500, "수업 일정 조회에 실패했습니다.");
+  if (!data) {
+    throw new EdgeApiError(400, "선택한 날짜에 해당하는 수업 일정이 없습니다.");
+  }
+  return data;
+}
+
 async function ensureClassSessionForDate(
   db: SupabaseClient,
   classRoom: Record<string, unknown>,
@@ -4989,6 +5098,11 @@ function assertDate(value: string, message: string) {
   }
 }
 
+function dayOfWeekFromDateString(value: string) {
+  const [year, month, day] = value.split("-").map(Number);
+  return new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+}
+
 function normalizeClassKind(value: unknown) {
   const kind = stringValue(value) || "regular";
   if (!["regular", "makeup", "extra"].includes(kind)) {
@@ -5042,6 +5156,14 @@ function normalizeAttendanceStatus(value: unknown) {
     !["present", "late", "absent", "excused", "left_early"].includes(status)
   ) {
     throw new EdgeApiError(400, "출결 상태가 올바르지 않습니다.");
+  }
+  return status;
+}
+
+function normalizeClassSessionStatus(value: unknown) {
+  const status = stringValue(value) || "scheduled";
+  if (!["scheduled", "open", "completed", "cancelled"].includes(status)) {
+    throw new EdgeApiError(400, "수업 회차 상태가 올바르지 않습니다.");
   }
   return status;
 }
