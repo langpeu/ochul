@@ -3038,6 +3038,36 @@ class _ClassroomLayoutPanelState extends State<_ClassroomLayoutPanel> {
     await _saveAssignments(classId, nextAssignments);
   }
 
+  Future<void> _deleteSeat({
+    required ClassroomLayout layout,
+    required ClassroomSeat seat,
+  }) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('좌석 ${seat.label} 삭제'),
+        content: const Text('좌석과 연결된 학생 배정이 함께 정리됩니다.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('취소'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('삭제'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    final remainingSeats = [
+      for (final current in layout.seats)
+        if (current.id != seat.id) current,
+    ];
+    await _saveLayout(layout.copyWith(seats: remainingSeats));
+  }
+
   Future<void> _saveAssignments(
     String classId,
     List<SeatAssignmentInput> assignments,
@@ -3297,6 +3327,23 @@ class _ClassroomLayoutPanelState extends State<_ClassroomLayoutPanel> {
                                                               seatId: seatId,
                                                             ),
                                                     ),
+                                                  IconButton(
+                                                    tooltip: '좌석 삭제',
+                                                    visualDensity:
+                                                        VisualDensity.compact,
+                                                    icon: const Icon(
+                                                      Icons.delete_outline,
+                                                      size: 18,
+                                                    ),
+                                                    onPressed:
+                                                        _saving ||
+                                                            seatId == null
+                                                        ? null
+                                                        : () => _deleteSeat(
+                                                            layout: layout,
+                                                            seat: seat,
+                                                          ),
+                                                  ),
                                                 ],
                                               ),
                                               const Spacer(),
