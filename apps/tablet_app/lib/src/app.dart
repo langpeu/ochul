@@ -4,7 +4,6 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'core/app_config.dart';
-import 'features/admin/admin_dashboard.dart';
 import 'features/attendance/student_attendance_screen.dart';
 import 'features/auth/auth_service.dart';
 import 'features/auth/login_screen.dart';
@@ -127,12 +126,6 @@ class _AppShellState extends State<AppShell> {
         icon: Icons.dashboard_outlined,
         selectedIcon: Icons.dashboard,
         child: TeacherDashboard(config: widget.config),
-      ),
-      _Destination(
-        label: '관리자',
-        icon: Icons.admin_panel_settings_outlined,
-        selectedIcon: Icons.admin_panel_settings,
-        child: const AdminDashboard(),
       ),
     ];
 
