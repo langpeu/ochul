@@ -60,7 +60,7 @@ Edge API 경로는 REST 스타일로 간결하고 명확하게 둔다.
 ### students
 
 - `GET /study-rooms/{studyRoomId}/students`: 학생 목록
-- `POST /study-rooms/{studyRoomId}/students`: 학생 생성
+- `POST /study-rooms/{studyRoomId}/students`: 학생 생성, 6자리 출결 비밀번호 해시 저장
 - `GET /students/{studentId}`: 학생 상세
 - `PATCH /students/{studentId}`: 학생 수정
 - `DELETE /students/{studentId}`: 학생 삭제 또는 비활성화

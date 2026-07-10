@@ -85,6 +85,18 @@ async function routeEdgeRequest(
     return await onboardTeacher(body, context);
   }
 
+  const studyRoomStudentsMatch = path.match(
+    /^\/study-rooms\/([^/]+)\/students$/,
+  );
+  if (studyRoomStudentsMatch) {
+    if (method === "GET") {
+      return await listStudents(studyRoomStudentsMatch[1], context);
+    }
+    if (method === "POST") {
+      return await createStudent(studyRoomStudentsMatch[1], body, context);
+    }
+  }
+
   const checkInMatch = path.match(
     /^\/class-sessions\/([^/]+)\/check-in$/,
   );
@@ -231,6 +243,115 @@ async function onboardTeacher(
       name: studyRoom.name,
       description: studyRoom.description,
     }],
+  };
+}
+
+async function listStudents(
+  studyRoomId: string,
+  { db, teacher }: AppContext,
+): Promise<Record<string, unknown>> {
+  const activeTeacher = requireTeacherProfile(teacher);
+  assertUuid(studyRoomId, "공부방 정보가 올바르지 않습니다.");
+  await assertStudyRoomAccess(db, activeTeacher, studyRoomId, {
+    allowAdmin: true,
+  });
+
+  const { data: students, error } = await db
+    .from("students")
+    .select("id, student_code, name, status, gender, age_group, avatar_key")
+    .eq("study_room_id", studyRoomId)
+    .order("created_at", { ascending: false });
+
+  if (error) throw new EdgeApiError(500, "학생 목록 조회에 실패했습니다.");
+
+  return {
+    ok: true,
+    students: (students ?? []).map((student) => ({
+      id: student.id,
+      code: student.student_code,
+      name: student.name,
+      status: student.status,
+      gender: student.gender,
+      ageGroup: student.age_group,
+      avatarKey: student.avatar_key,
+    })),
+  };
+}
+
+async function createStudent(
+  studyRoomId: string,
+  body: Record<string, unknown>,
+  { db, teacher }: AppContext,
+): Promise<Record<string, unknown>> {
+  const activeTeacher = requireTeacherProfile(teacher);
+  assertUuid(studyRoomId, "공부방 정보가 올바르지 않습니다.");
+  await assertStudyRoomAccess(db, activeTeacher, studyRoomId, {
+    allowAdmin: false,
+  });
+
+  const name = stringValue(body.name);
+  const code = stringValue(body.code);
+  const pin = stringValue(body.pin);
+  if (name.length < 2) {
+    throw new EdgeApiError(400, "학생 이름을 입력해 주세요.");
+  }
+  if (code.length < 1) throw new EdgeApiError(400, "학생번호를 입력해 주세요.");
+  if (!pinPattern.test(pin)) {
+    throw new EdgeApiError(400, "출결 비밀번호는 숫자 6자리여야 합니다.");
+  }
+
+  const { data: studyRoom, error: studyRoomError } = await db
+    .from("study_rooms")
+    .select("id, organization_id")
+    .eq("id", studyRoomId)
+    .eq("owner_teacher_id", activeTeacher.id)
+    .single();
+
+  if (studyRoomError) {
+    throw new EdgeApiError(500, "공부방 조회에 실패했습니다.");
+  }
+
+  const { data: student, error: studentError } = await db
+    .from("students")
+    .insert({
+      organization_id: studyRoom.organization_id,
+      study_room_id: studyRoomId,
+      student_code: code,
+      name,
+      pin_hash: await hashStudentPin(db, pin),
+      pin_reset_required: false,
+      status: "active",
+    })
+    .select("id, student_code, name, status, gender, age_group, avatar_key")
+    .single();
+
+  if (studentError) {
+    if (studentError.code === "23505") {
+      throw new EdgeApiError(409, "이미 사용 중인 학생번호입니다.");
+    }
+    throw new EdgeApiError(500, "학생 등록에 실패했습니다.");
+  }
+
+  await createStudentAuditLog(db, {
+    organizationId: studyRoom.organization_id,
+    studyRoomId,
+    actorTeacherId: activeTeacher.id,
+    studentId: student.id,
+    title: "학생 등록",
+    summary: `${student.name} 학생을 등록했습니다.`,
+  });
+
+  return {
+    ok: true,
+    student: {
+      id: student.id,
+      code: student.student_code,
+      name: student.name,
+      status: student.status,
+      gender: student.gender,
+      ageGroup: student.age_group,
+      avatarKey: student.avatar_key,
+    },
   };
 }
 
@@ -567,6 +688,43 @@ async function createAuditLog(
   if (error) throw new EdgeApiError(500, "사용 히스토리 기록에 실패했습니다.");
 }
 
+async function createStudentAuditLog(
+  db: SupabaseClient,
+  input: {
+    organizationId: string;
+    studyRoomId: string;
+    actorTeacherId: string;
+    studentId: string;
+    title: string;
+    summary: string;
+  },
+) {
+  const { error } = await db.from("audit_logs").insert({
+    organization_id: input.organizationId,
+    study_room_id: input.studyRoomId,
+    actor_teacher_id: input.actorTeacherId,
+    student_id: input.studentId,
+    entity_type: "student",
+    entity_id: input.studentId,
+    action: "created",
+    title: input.title,
+    summary: input.summary,
+  });
+
+  if (error) throw new EdgeApiError(500, "사용 히스토리 기록에 실패했습니다.");
+}
+
+async function hashStudentPin(db: SupabaseClient, pin: string) {
+  const { data, error } = await db.rpc("hash_student_pin", {
+    plain_pin: pin,
+  });
+
+  if (error || typeof data !== "string") {
+    throw new EdgeApiError(500, "출결 비밀번호 저장에 실패했습니다.");
+  }
+  return data;
+}
+
 async function requireAuthUser(
   request: Request,
   db: SupabaseClient,
@@ -657,6 +815,11 @@ function stringValue(value: unknown): string {
 
 function assertUuid(value: string, message: string) {
   if (!uuidPattern.test(value)) throw new EdgeApiError(400, message);
+}
+
+function requireTeacherProfile(teacher: TeacherContext | null) {
+  if (!teacher) throw new EdgeApiError(403, "선생님 프로필이 필요합니다.");
+  return teacher;
 }
 
 function maskPhone(phone: string) {

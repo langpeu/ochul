@@ -524,6 +524,26 @@ from public, anon, authenticated;
 grant execute on function public.verify_student_pin(uuid, text)
 to service_role;
 
+create or replace function public.hash_student_pin(plain_pin text)
+returns text
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select case
+    when plain_pin ~ '^[0-9]{6}$'
+      then crypt(plain_pin, gen_salt('bf'))
+    else null
+  end
+$$;
+
+revoke execute on function public.hash_student_pin(text)
+from public, anon, authenticated;
+
+grant execute on function public.hash_student_pin(text)
+to service_role;
+
 create policy "teachers can read own profile"
 on teachers for select
 using (auth_user_id = auth.uid());

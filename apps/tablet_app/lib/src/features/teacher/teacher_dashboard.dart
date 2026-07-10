@@ -4,6 +4,7 @@ import '../../core/app_config.dart';
 import '../../core/edge_function_client.dart';
 import '../../core/teacher_gate.dart';
 import '../../models/sample_data.dart';
+import 'student_management_service.dart';
 import 'teacher_home_service.dart';
 
 class TeacherDashboard extends StatefulWidget {
@@ -19,6 +20,9 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
   var _unlocked = false;
   final _gate = TeacherGate();
   final _homeService = const TeacherHomeService(
+    edgeClient: EdgeFunctionClient(),
+  );
+  final _studentService = const StudentManagementService(
     edgeClient: EdgeFunctionClient(),
   );
 
@@ -57,19 +61,75 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
           _TeacherHomeHeader(config: widget.config, service: _homeService),
           const SizedBox(height: 16),
           Expanded(
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(child: _ClassPanel(classes: sampleClasses)),
-                const SizedBox(width: 16),
-                Expanded(child: _EnrollmentPanel(classes: sampleClasses)),
-                const SizedBox(width: 16),
-                const Expanded(child: _AuditPanel()),
-              ],
+            child: _TeacherBoardContent(
+              config: widget.config,
+              homeService: _homeService,
+              studentService: _studentService,
             ),
           ),
         ],
       ),
+    );
+  }
+}
+
+class _TeacherBoardContent extends StatelessWidget {
+  const _TeacherBoardContent({
+    required this.config,
+    required this.homeService,
+    required this.studentService,
+  });
+
+  final AppConfig config;
+  final TeacherHomeService homeService;
+  final StudentManagementService studentService;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!config.isSupabaseConfigured) {
+      return Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(child: _ClassPanel(classes: sampleClasses)),
+          const SizedBox(width: 16),
+          Expanded(child: _EnrollmentPanel(classes: sampleClasses)),
+          const SizedBox(width: 16),
+          const Expanded(child: _AuditPanel()),
+        ],
+      );
+    }
+
+    return FutureBuilder<TeacherHome>(
+      future: homeService.fetchMe(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState != ConnectionState.done) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        if (snapshot.hasError) {
+          return _TeacherHomeError(message: snapshot.error.toString());
+        }
+        final home = snapshot.requireData;
+        final studyRoom = home.studyRooms.isEmpty
+            ? null
+            : home.studyRooms.first;
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(child: _ClassPanel(classes: sampleClasses)),
+            const SizedBox(width: 16),
+            Expanded(
+              child: studyRoom == null
+                  ? const _EmptyStudyRoomPanel()
+                  : _StudentManagementPanel(
+                      studyRoom: studyRoom,
+                      service: studentService,
+                    ),
+            ),
+            const SizedBox(width: 16),
+            const Expanded(child: _AuditPanel()),
+          ],
+        );
+      },
     );
   }
 }
@@ -445,6 +505,201 @@ class _EnrollmentPanel extends StatelessWidget {
                   },
                 ),
               ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _StudentManagementPanel extends StatefulWidget {
+  const _StudentManagementPanel({
+    required this.studyRoom,
+    required this.service,
+  });
+
+  final StudyRoomSummary studyRoom;
+  final StudentManagementService service;
+
+  @override
+  State<_StudentManagementPanel> createState() =>
+      _StudentManagementPanelState();
+}
+
+class _StudentManagementPanelState extends State<_StudentManagementPanel> {
+  late Future<List<ManagedStudent>> _studentsFuture;
+  final _nameController = TextEditingController();
+  final _codeController = TextEditingController();
+  final _pinController = TextEditingController();
+  String? _errorText;
+  var _submitting = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _studentsFuture = widget.service.fetchStudents(widget.studyRoom.id);
+  }
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _codeController.dispose();
+    _pinController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _createStudent() async {
+    final name = _nameController.text.trim();
+    final code = _codeController.text.trim();
+    final pin = _pinController.text.trim();
+    if (name.length < 2 || code.isEmpty || !RegExp(r'^\d{6}$').hasMatch(pin)) {
+      setState(() => _errorText = '학생 이름, 학생번호, 숫자 6자리 비밀번호를 입력해 주세요.');
+      return;
+    }
+
+    setState(() {
+      _errorText = null;
+      _submitting = true;
+    });
+    try {
+      await widget.service.createStudent(
+        studyRoomId: widget.studyRoom.id,
+        name: name,
+        code: code,
+        pin: pin,
+      );
+      _nameController.clear();
+      _codeController.clear();
+      _pinController.clear();
+      if (mounted) {
+        setState(() {
+          _studentsFuture = widget.service.fetchStudents(widget.studyRoom.id);
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() => _errorText = '학생 등록에 실패했습니다.');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _submitting = false);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('학생 관리', style: Theme.of(context).textTheme.titleLarge),
+            const SizedBox(height: 4),
+            Text(widget.studyRoom.name),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                SizedBox(
+                  width: 120,
+                  child: TextField(
+                    controller: _nameController,
+                    enabled: !_submitting,
+                    decoration: const InputDecoration(
+                      labelText: '학생명',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+                SizedBox(
+                  width: 120,
+                  child: TextField(
+                    controller: _codeController,
+                    enabled: !_submitting,
+                    decoration: const InputDecoration(
+                      labelText: '학생번호',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+                SizedBox(
+                  width: 150,
+                  child: TextField(
+                    controller: _pinController,
+                    enabled: !_submitting,
+                    obscureText: true,
+                    maxLength: 6,
+                    keyboardType: TextInputType.number,
+                    decoration: InputDecoration(
+                      labelText: '출결 비밀번호',
+                      errorText: _errorText,
+                      border: const OutlineInputBorder(),
+                    ),
+                    onSubmitted: (_) => _submitting ? null : _createStudent(),
+                  ),
+                ),
+                FilledButton.icon(
+                  onPressed: _submitting ? null : _createStudent,
+                  icon: const Icon(Icons.person_add_alt_1),
+                  label: Text(_submitting ? '등록 중' : '등록'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Expanded(
+              child: FutureBuilder<List<ManagedStudent>>(
+                future: _studentsFuture,
+                builder: (context, snapshot) {
+                  if (snapshot.connectionState != ConnectionState.done) {
+                    return const Center(child: CircularProgressIndicator());
+                  }
+                  if (snapshot.hasError) {
+                    return Text('학생 목록을 불러오지 못했습니다. ${snapshot.error}');
+                  }
+                  final students = snapshot.data ?? const <ManagedStudent>[];
+                  if (students.isEmpty) {
+                    return const Center(child: Text('등록된 학생이 없습니다.'));
+                  }
+                  return ListView.builder(
+                    itemCount: students.length,
+                    itemBuilder: (context, index) {
+                      final student = students[index];
+                      return ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        leading: const Icon(Icons.person_outline),
+                        title: Text(student.name),
+                        subtitle: Text('${student.code} · ${student.status}'),
+                      );
+                    },
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _EmptyStudyRoomPanel extends StatelessWidget {
+  const _EmptyStudyRoomPanel();
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('학생 관리', style: Theme.of(context).textTheme.titleLarge),
+            const SizedBox(height: 12),
+            const Text('공부방을 먼저 생성해 주세요.'),
           ],
         ),
       ),
