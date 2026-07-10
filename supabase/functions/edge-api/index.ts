@@ -333,6 +333,17 @@ async function routeEdgeRequest(
     }
   }
 
+  const classStudentOrderMatch = path.match(
+    /^\/classes\/([^/]+)\/students\/order$/,
+  );
+  if (method === "PATCH" && classStudentOrderMatch) {
+    return await updateClassStudentOrder(
+      classStudentOrderMatch[1],
+      body,
+      context,
+    );
+  }
+
   const openClassSessionMatch = path.match(
     /^\/classes\/([^/]+)\/sessions\/open$/,
   );
@@ -1470,6 +1481,68 @@ async function saveClassStudents(
     title: "수업 학생 등록 변경",
     summary:
       `${classRoom.name} 수업의 등록 학생 ${studentIds.length}명을 저장했습니다.`,
+  });
+
+  return await listClassStudents(classId, {
+    db,
+    authUser: { id: "", email: null, name: null },
+    teacher: activeTeacher,
+  });
+}
+
+async function updateClassStudentOrder(
+  classId: string,
+  body: Record<string, unknown>,
+  { db, teacher }: AppContext,
+): Promise<Record<string, unknown>> {
+  const activeTeacher = requireTeacherProfile(teacher);
+  assertUuid(classId, "수업 정보가 올바르지 않습니다.");
+  const classRoom = await readAccessibleClass(db, classId, activeTeacher, {
+    allowAdmin: false,
+  });
+  const studentIds = normalizeUuidList(
+    body.studentIds,
+    "학생 순서가 올바르지 않습니다.",
+  );
+  if (studentIds.length === 0) {
+    throw new EdgeApiError(400, "정렬할 학생을 선택해 주세요.");
+  }
+
+  const { data: activeEnrollments, error: enrollmentError } = await db
+    .from("class_students")
+    .select("student_id")
+    .eq("class_id", classId)
+    .eq("active", true)
+    .in("student_id", studentIds);
+
+  if (enrollmentError) {
+    throw new EdgeApiError(500, "수업 학생 등록 확인에 실패했습니다.");
+  }
+  if ((activeEnrollments ?? []).length !== studentIds.length) {
+    throw new EdgeApiError(400, "등록된 학생만 순서를 변경할 수 있습니다.");
+  }
+
+  const updateResults = await Promise.all(
+    studentIds.map((studentId, index) =>
+      db
+        .from("class_students")
+        .update({ display_order: index })
+        .eq("class_id", classId)
+        .eq("student_id", studentId)
+        .eq("active", true)
+    ),
+  );
+  if (updateResults.some((result) => result.error)) {
+    throw new EdgeApiError(500, "학생 순서 저장에 실패했습니다.");
+  }
+
+  await createClassStudentAuditLog(db, {
+    organizationId: classRoom.organization_id,
+    studyRoomId: classRoom.study_room_id,
+    actorTeacherId: activeTeacher.id,
+    classId,
+    title: "수업 학생 순서 변경",
+    summary: `${classRoom.name} 수업의 학생 표시 순서를 변경했습니다.`,
   });
 
   return await listClassStudents(classId, {

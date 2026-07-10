@@ -32,4 +32,21 @@ class EnrollmentManagementService {
           if (item is Map<String, dynamic>) ManagedStudent.fromJson(item),
     ];
   }
+
+  Future<List<ManagedStudent>> updateClassStudentOrder({
+    required String classId,
+    required List<String> studentIds,
+  }) async {
+    final data = await edgeClient.call(
+      '/classes/$classId/students/order',
+      method: EdgeHttpMethod.patch,
+      body: <String, dynamic>{'studentIds': studentIds},
+    );
+    final studentsJson = data['students'];
+    return [
+      if (studentsJson is List)
+        for (final item in studentsJson)
+          if (item is Map<String, dynamic>) ManagedStudent.fromJson(item),
+    ];
+  }
 }
