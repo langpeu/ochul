@@ -2905,6 +2905,14 @@ class _AdminDashboardPanelState extends State<_AdminDashboardPanel> {
     final students = effectiveStudyRoomId == null
         ? const <ManagedStudent>[]
         : await widget.service.fetchStudyRoomStudents(effectiveStudyRoomId);
+    final auditLogs = effectiveStudyRoomId == null
+        ? const <AppAuditLog>[]
+        : await widget.service.fetchStudyRoomAuditLogs(effectiveStudyRoomId);
+    final notifications = effectiveStudyRoomId == null
+        ? const <KakaoNotificationLog>[]
+        : await widget.service.fetchStudyRoomNotifications(
+            effectiveStudyRoomId,
+          );
 
     _selectedTeacherId = teacherId;
     _selectedStudyRoomId = effectiveStudyRoomId;
@@ -2912,6 +2920,8 @@ class _AdminDashboardPanelState extends State<_AdminDashboardPanel> {
       teachers: teachers,
       studyRooms: studyRooms,
       students: students,
+      auditLogs: auditLogs,
+      notifications: notifications,
     );
   }
 
@@ -2961,7 +2971,14 @@ class _AdminDashboardPanelState extends State<_AdminDashboardPanel> {
               ),
             ),
             const SizedBox(width: 16),
-            Expanded(child: _AdminStudentListPanel(students: data.students)),
+            Expanded(
+              flex: 2,
+              child: _AdminStudyRoomDetailPanel(
+                students: data.students,
+                auditLogs: data.auditLogs,
+                notifications: data.notifications,
+              ),
+            ),
           ],
         );
       },
@@ -2974,11 +2991,15 @@ class _AdminDashboardData {
     required this.teachers,
     required this.studyRooms,
     required this.students,
+    required this.auditLogs,
+    required this.notifications,
   });
 
   final List<AdminTeacherSummary> teachers;
   final List<StudyRoomSummary> studyRooms;
   final List<ManagedStudent> students;
+  final List<AppAuditLog> auditLogs;
+  final List<KakaoNotificationLog> notifications;
 }
 
 class _AdminTeacherListPanel extends StatelessWidget {
@@ -3072,46 +3093,6 @@ class _AdminStudyRoomListPanel extends StatelessWidget {
                           title: Text(studyRoom.name),
                           subtitle: Text(studyRoom.description ?? '설명 없음'),
                           onTap: () => onSelected(studyRoom.id),
-                        );
-                      },
-                    ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _AdminStudentListPanel extends StatelessWidget {
-  const _AdminStudentListPanel({required this.students});
-
-  final List<ManagedStudent> students;
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('학생 목록', style: Theme.of(context).textTheme.titleLarge),
-            const SizedBox(height: 12),
-            Expanded(
-              child: students.isEmpty
-                  ? const Center(child: Text('선택한 공부방에 학생이 없습니다.'))
-                  : ListView.builder(
-                      itemCount: students.length,
-                      itemBuilder: (context, index) {
-                        final student = students[index];
-                        return ListTile(
-                          contentPadding: EdgeInsets.zero,
-                          leading: const Icon(Icons.person_outline),
-                          title: Text(student.name),
-                          subtitle: Text(
-                            '${student.code} · ${_studentStatusLabel(student.status)}',
-                          ),
                         );
                       },
                     ),
@@ -3643,6 +3624,150 @@ class _StudentPinResetDialogState extends State<_StudentPinResetDialog> {
         ),
         FilledButton(onPressed: _submit, child: const Text('리셋')),
       ],
+    );
+  }
+}
+
+class _AdminStudyRoomDetailPanel extends StatelessWidget {
+  const _AdminStudyRoomDetailPanel({
+    required this.students,
+    required this.auditLogs,
+    required this.notifications,
+  });
+
+  final List<ManagedStudent> students;
+  final List<AppAuditLog> auditLogs;
+  final List<KakaoNotificationLog> notifications;
+
+  @override
+  Widget build(BuildContext context) {
+    return DefaultTabController(
+      length: 3,
+      child: Card(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('공부방 상세', style: Theme.of(context).textTheme.titleLarge),
+              const SizedBox(height: 8),
+              const TabBar(
+                tabs: [
+                  Tab(text: '학생'),
+                  Tab(text: '히스토리'),
+                  Tab(text: '카카오'),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Expanded(
+                child: TabBarView(
+                  children: [
+                    _AdminStudentListView(students: students),
+                    _AdminAuditLogListView(logs: auditLogs),
+                    _AdminNotificationListView(notifications: notifications),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _AdminStudentListView extends StatelessWidget {
+  const _AdminStudentListView({required this.students});
+
+  final List<ManagedStudent> students;
+
+  @override
+  Widget build(BuildContext context) {
+    if (students.isEmpty) {
+      return const Center(child: Text('선택한 공부방에 학생이 없습니다.'));
+    }
+    return ListView.builder(
+      itemCount: students.length,
+      itemBuilder: (context, index) {
+        final student = students[index];
+        return ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: const Icon(Icons.person_outline),
+          title: Text(student.name),
+          subtitle: Text(
+            '${student.code} · ${_studentStatusLabel(student.status)}',
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _AdminAuditLogListView extends StatelessWidget {
+  const _AdminAuditLogListView({required this.logs});
+
+  final List<AppAuditLog> logs;
+
+  @override
+  Widget build(BuildContext context) {
+    if (logs.isEmpty) {
+      return const Center(child: Text('표시할 히스토리가 없습니다.'));
+    }
+    return ListView.builder(
+      itemCount: logs.length,
+      itemBuilder: (context, index) {
+        final log = logs[index];
+        return ListTile(
+          dense: true,
+          contentPadding: EdgeInsets.zero,
+          leading: Icon(_auditIcon(log.category)),
+          title: Text(log.title),
+          subtitle: Text(
+            [
+              _auditCategoryLabel(log.category),
+              log.actor,
+              _formatAuditTime(log.createdAt),
+              if (log.summary != null && log.summary!.isNotEmpty) log.summary!,
+            ].join(' · '),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _AdminNotificationListView extends StatelessWidget {
+  const _AdminNotificationListView({required this.notifications});
+
+  final List<KakaoNotificationLog> notifications;
+
+  @override
+  Widget build(BuildContext context) {
+    if (notifications.isEmpty) {
+      return const Center(child: Text('표시할 카카오 이력이 없습니다.'));
+    }
+    return ListView.builder(
+      itemCount: notifications.length,
+      itemBuilder: (context, index) {
+        final log = notifications[index];
+        return ListTile(
+          dense: true,
+          contentPadding: EdgeInsets.zero,
+          leading: Icon(_notificationStatusIcon(log.status)),
+          title: Text('${log.studentName} · ${log.className}'),
+          subtitle: Text(
+            [
+              _notificationEventLabel(log.eventType),
+              _notificationStatusLabel(log.status),
+              log.recipientPhoneMasked,
+              if (log.templateCode.isNotEmpty) log.templateCode,
+              _formatAuditTime(log.sentAt ?? log.createdAt),
+              if (log.errorMessage != null && log.errorMessage!.isNotEmpty)
+                log.errorMessage!,
+            ].join(' · '),
+          ),
+        );
+      },
     );
   }
 }

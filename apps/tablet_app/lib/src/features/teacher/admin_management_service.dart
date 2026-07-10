@@ -1,4 +1,6 @@
 import '../../core/edge_function_client.dart';
+import 'audit_log_service.dart';
+import 'notification_log_service.dart';
 import 'student_management_service.dart';
 import 'teacher_home_service.dart';
 
@@ -42,6 +44,34 @@ class AdminManagementService {
       if (studentsJson is List)
         for (final item in studentsJson)
           if (item is Map<String, dynamic>) ManagedStudent.fromJson(item),
+    ];
+  }
+
+  Future<List<AppAuditLog>> fetchStudyRoomAuditLogs(String studyRoomId) async {
+    final data = await edgeClient.call(
+      '/admin/study-rooms/$studyRoomId/audit-logs',
+      body: <String, dynamic>{'category': 'all', 'limit': 50},
+    );
+    final logsJson = data['logs'];
+    return [
+      if (logsJson is List)
+        for (final item in logsJson)
+          if (item is Map<String, dynamic>) AppAuditLog.fromJson(item),
+    ];
+  }
+
+  Future<List<KakaoNotificationLog>> fetchStudyRoomNotifications(
+    String studyRoomId,
+  ) async {
+    final data = await edgeClient.call(
+      '/admin/study-rooms/$studyRoomId/notifications',
+      body: <String, dynamic>{'status': 'all', 'limit': 50},
+    );
+    final notificationsJson = data['notifications'];
+    return [
+      if (notificationsJson is List)
+        for (final item in notificationsJson)
+          if (item is Map<String, dynamic>) KakaoNotificationLog.fromJson(item),
     ];
   }
 }

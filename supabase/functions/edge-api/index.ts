@@ -148,6 +148,28 @@ async function routeEdgeRequest(
     );
   }
 
+  const adminStudyRoomAuditLogsMatch = path.match(
+    /^\/admin\/study-rooms\/([^/]+)\/audit-logs$/,
+  );
+  if (method === "GET" && adminStudyRoomAuditLogsMatch) {
+    return await listAdminStudyRoomAuditLogs(
+      adminStudyRoomAuditLogsMatch[1],
+      body,
+      context,
+    );
+  }
+
+  const adminStudyRoomNotificationsMatch = path.match(
+    /^\/admin\/study-rooms\/([^/]+)\/notifications$/,
+  );
+  if (method === "GET" && adminStudyRoomNotificationsMatch) {
+    return await listAdminStudyRoomNotifications(
+      adminStudyRoomNotificationsMatch[1],
+      body,
+      context,
+    );
+  }
+
   const studyRoomStudentsMatch = path.match(
     /^\/study-rooms\/([^/]+)\/students$/,
   );
@@ -696,6 +718,24 @@ async function listAdminStudyRoomStudents(
 ): Promise<Record<string, unknown>> {
   requireAdminTeacher(context.teacher);
   return await listStudents(studyRoomId, context);
+}
+
+async function listAdminStudyRoomAuditLogs(
+  studyRoomId: string,
+  body: Record<string, unknown>,
+  context: AppContext,
+): Promise<Record<string, unknown>> {
+  requireAdminTeacher(context.teacher);
+  return await listAuditLogs(studyRoomId, body, context);
+}
+
+async function listAdminStudyRoomNotifications(
+  studyRoomId: string,
+  body: Record<string, unknown>,
+  context: AppContext,
+): Promise<Record<string, unknown>> {
+  requireAdminTeacher(context.teacher);
+  return await listNotifications(studyRoomId, body, context);
 }
 
 async function listClasses(

@@ -143,6 +143,7 @@ Edge API 경로는 REST 스타일로 간결하고 명확하게 둔다.
 - `GET /admin/teachers/{teacherId}/study-rooms`: 선생님별 공부방
 - `GET /admin/study-rooms/{studyRoomId}/students`: 공부방별 학생
 - `GET /admin/study-rooms/{studyRoomId}/audit-logs`: 공부방별 히스토리
+- `GET /admin/study-rooms/{studyRoomId}/notifications`: 공부방별 카카오 발송 이력
 
 ## Edge Function 공통 처리
 
