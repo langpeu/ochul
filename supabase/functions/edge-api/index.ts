@@ -423,6 +423,15 @@ async function routeEdgeRequest(
     }
   }
 
+  const attendanceRecordMatch = path.match(/^\/attendance-records\/([^/]+)$/);
+  if (method === "PATCH" && attendanceRecordMatch) {
+    return await updateAttendanceRecord(
+      attendanceRecordMatch[1],
+      body,
+      context,
+    );
+  }
+
   const checkInMatch = path.match(
     /^\/class-sessions\/([^/]+)\/check-in$/,
   );
@@ -2286,6 +2295,89 @@ async function updateClassSessionAttendance(
     title: "출결 상태 수정",
     summary:
       `${student.name} 학생의 ${classInfo.name} 출결 상태를 ${status}로 수정했습니다.`,
+  });
+
+  return {
+    ok: true,
+    attendance: {
+      recordId: record.id,
+      studentId: record.student_id,
+      status: record.status,
+      checkedInAt: record.checked_in_at,
+      note: record.note,
+    },
+    notifications: {
+      requested: notifications.length,
+    },
+  };
+}
+
+async function updateAttendanceRecord(
+  attendanceRecordId: string,
+  body: Record<string, unknown>,
+  { db, teacher }: AppContext,
+): Promise<Record<string, unknown>> {
+  const activeTeacher = requireTeacherProfile(teacher);
+  assertUuid(attendanceRecordId, "출결 기록 정보가 올바르지 않습니다.");
+  const status = normalizeAttendanceStatus(body.status);
+  const note = nullableString(body.note);
+  const current = await readAttendanceRecordDetail(db, attendanceRecordId);
+  await assertStudyRoomAccess(db, activeTeacher, current.study_room_id, {
+    allowAdmin: false,
+  });
+  const session = await readClassSession(db, current.class_session_id);
+  const student = await readStudent(
+    db,
+    current.student_id,
+    current.study_room_id,
+  );
+  await assertStudentEnrollment(db, session.class_id, current.student_id);
+
+  const { data: record, error } = await db
+    .from("attendance_records")
+    .update({
+      status,
+      checked_in_at: status === "present" || status === "late"
+        ? current.checked_in_at ?? new Date().toISOString()
+        : null,
+      checked_in_method: "teacher_manual",
+      note,
+      updated_by_teacher_id: activeTeacher.id,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", attendanceRecordId)
+    .select("id, student_id, status, checked_in_at, note")
+    .single();
+
+  if (error) throw new EdgeApiError(500, "출결 기록 수정에 실패했습니다.");
+
+  const classInfo = await readClassInfo(db, session.class_id);
+  const notificationTime = record.checked_in_at ?? new Date().toISOString();
+  const notifications = await createAttendanceNotificationLogs(db, {
+    organizationId: session.organization_id,
+    studyRoomId: session.study_room_id,
+    classId: session.class_id,
+    classSessionId: session.id,
+    attendanceRecordId: record.id,
+    studentId: current.student_id,
+    studentName: student.name,
+    className: classInfo.name,
+    attendanceStatus: status,
+    checkedInAt: notificationTime,
+  });
+
+  await createAuditLog(db, {
+    organizationId: session.organization_id,
+    studyRoomId: session.study_room_id,
+    actorTeacherId: activeTeacher.id,
+    studentId: current.student_id,
+    classId: session.class_id,
+    classSessionId: session.id,
+    entityId: record.id,
+    action: "status_changed",
+    title: "출결 기록 수정",
+    summary:
+      `${student.name} 학생의 ${classInfo.name} 출결 기록을 ${status}로 수정했습니다.`,
   });
 
   return {
@@ -4368,6 +4460,23 @@ async function readExistingAttendance(
     .maybeSingle();
 
   if (error) throw new EdgeApiError(500, "출석 기록 조회에 실패했습니다.");
+  return data;
+}
+
+async function readAttendanceRecordDetail(
+  db: SupabaseClient,
+  attendanceRecordId: string,
+) {
+  const { data, error } = await db
+    .from("attendance_records")
+    .select(
+      "id, organization_id, study_room_id, class_session_id, student_id, status, checked_in_at",
+    )
+    .eq("id", attendanceRecordId)
+    .maybeSingle();
+
+  if (error) throw new EdgeApiError(500, "출결 기록 조회에 실패했습니다.");
+  if (!data) throw new EdgeApiError(404, "출결 기록을 찾을 수 없습니다.");
   return data;
 }
 

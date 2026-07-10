@@ -42,6 +42,19 @@ class AttendanceManagementService {
     );
     return AttendanceUpdateResult.fromJson(data);
   }
+
+  Future<AttendanceUpdateResult> updateAttendanceRecord({
+    required String attendanceRecordId,
+    required String status,
+    required String note,
+  }) async {
+    final data = await edgeClient.call(
+      '/attendance-records/$attendanceRecordId',
+      method: EdgeHttpMethod.patch,
+      body: <String, dynamic>{'status': status, 'note': note},
+    );
+    return AttendanceUpdateResult.fromJson(data);
+  }
 }
 
 class AttendanceUpdateResult {
@@ -106,6 +119,7 @@ class TeacherAttendanceStudent {
     required this.id,
     required this.code,
     required this.name,
+    required this.recordId,
     required this.status,
     required this.avatarKey,
     required this.note,
@@ -116,6 +130,7 @@ class TeacherAttendanceStudent {
       id: json['id'] as String? ?? '',
       code: json['code'] as String? ?? '',
       name: json['name'] as String? ?? '학생',
+      recordId: json['recordId'] as String?,
       status: json['status'] as String? ?? 'waiting',
       avatarKey: json['avatarKey'] as String? ?? 'elementary_unspecified_01',
       note: json['note'] as String?,
@@ -125,6 +140,7 @@ class TeacherAttendanceStudent {
   final String id;
   final String code;
   final String name;
+  final String? recordId;
   final String status;
   final String avatarKey;
   final String? note;

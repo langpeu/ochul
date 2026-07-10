@@ -4442,12 +4442,18 @@ class _AttendanceManagementPanelState
     if (sessionId == null) return;
     setState(() => _processingStudentId = student.id);
     try {
-      final result = await widget.service.updateAttendance(
-        classSessionId: sessionId,
-        studentId: student.id,
-        status: status,
-        note: '',
-      );
+      final result = student.recordId == null
+          ? await widget.service.updateAttendance(
+              classSessionId: sessionId,
+              studentId: student.id,
+              status: status,
+              note: '',
+            )
+          : await widget.service.updateAttendanceRecord(
+              attendanceRecordId: student.recordId!,
+              status: status,
+              note: '',
+            );
       if (mounted) {
         setState(() => _dataFuture = _loadData());
         ScaffoldMessenger.of(context).showSnackBar(
