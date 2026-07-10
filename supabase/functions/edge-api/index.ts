@@ -318,6 +318,17 @@ async function routeEdgeRequest(
     );
   }
 
+  const todayClassSessionMatch = path.match(
+    /^\/classes\/([^/]+)\/sessions\/today$/,
+  );
+  if (method === "PATCH" && todayClassSessionMatch) {
+    return await rescheduleTodayClassSession(
+      todayClassSessionMatch[1],
+      body,
+      context,
+    );
+  }
+
   const makeupClassSessionMatch = path.match(
     /^\/classes\/([^/]+)\/sessions\/makeup$/,
   );
@@ -1450,6 +1461,101 @@ async function cancelTodayClassSession(
     action: "status_changed",
     title: "수업 휴강",
     summary: `${classRoom.name} 수업을 휴강 처리했습니다.`,
+  });
+
+  return {
+    ok: true,
+    session: formatClassSession(updatedSession, classRoom),
+    notifications: { requested: notifications.length },
+  };
+}
+
+async function rescheduleTodayClassSession(
+  classId: string,
+  body: Record<string, unknown>,
+  { db, teacher }: AppContext,
+): Promise<Record<string, unknown>> {
+  const activeTeacher = requireTeacherProfile(teacher);
+  assertUuid(classId, "수업 정보가 올바르지 않습니다.");
+  const classRoom = await readAccessibleClass(db, classId, activeTeacher, {
+    allowAdmin: false,
+  });
+  const startsAt = normalizeTime(
+    body.startsAt,
+    "변경 시작 시간을 입력해 주세요.",
+  );
+  const endsAt = normalizeTime(body.endsAt, "변경 종료 시간을 입력해 주세요.");
+  if (startsAt >= endsAt) {
+    throw new EdgeApiError(400, "변경 종료 시간은 시작 시간 이후여야 합니다.");
+  }
+  const reason = nullableString(body.reason);
+  const sessionDate = todayDateString();
+  const session = await ensureClassSessionForDate(db, classRoom, sessionDate, {
+    status: "scheduled",
+    reason,
+    teacherId: activeTeacher.id,
+  });
+  if (session.status === "cancelled") {
+    throw new EdgeApiError(
+      400,
+      "휴강 처리된 회차는 시간을 변경할 수 없습니다.",
+    );
+  }
+
+  const beforeValue = {
+    sessionDate: session.session_date,
+    startsAt: session.starts_at,
+    endsAt: session.ends_at,
+    status: session.status,
+  };
+  const { data: updatedSession, error } = await db
+    .from("class_sessions")
+    .update({
+      starts_at: toKstIso(sessionDate, startsAt),
+      ends_at: toKstIso(sessionDate, endsAt),
+      change_reason: reason,
+      opened_by_teacher_id: activeTeacher.id,
+    })
+    .eq("id", session.id)
+    .select("id, session_date, starts_at, ends_at, status")
+    .single();
+
+  if (error) throw new EdgeApiError(500, "수업 시간 변경에 실패했습니다.");
+
+  await createClassSessionChange(db, {
+    organizationId: classRoom.organization_id,
+    studyRoomId: classRoom.study_room_id,
+    classSessionId: updatedSession.id,
+    changeType: "time_changed",
+    reason,
+    teacherId: activeTeacher.id,
+    beforeValue,
+    afterValue: { sessionDate, startsAt, endsAt },
+  });
+
+  const notifications = await createClassChangeNotificationLogs(db, {
+    organizationId: classRoom.organization_id,
+    studyRoomId: classRoom.study_room_id,
+    classId,
+    classSessionId: updatedSession.id,
+    eventType: "class_time_changed",
+    className: String(classRoom.name),
+    messageTitle: "수업 시간 변경 안내",
+    sessionDate,
+    startsAt: updatedSession.starts_at,
+    endsAt: updatedSession.ends_at,
+    reason,
+  });
+
+  await createClassChangeAuditLog(db, {
+    organizationId: classRoom.organization_id,
+    studyRoomId: classRoom.study_room_id,
+    actorTeacherId: activeTeacher.id,
+    classId,
+    classSessionId: updatedSession.id,
+    action: "status_changed",
+    title: "수업 시간 변경",
+    summary: `${classRoom.name} 수업 시간을 변경했습니다.`,
   });
 
   return {
@@ -3627,7 +3733,7 @@ async function createClassChangeNotificationLogs(
     studyRoomId: string;
     classId: string;
     classSessionId: string;
-    eventType: "class_cancelled" | "class_makeup_added";
+    eventType: "class_cancelled" | "class_makeup_added" | "class_time_changed";
     className: string;
     messageTitle: string;
     sessionDate: string;
@@ -4722,6 +4828,9 @@ function kakaoTemplateCode(eventType: string) {
     case "class_makeup_added":
       return Deno.env.get("KAKAO_TEMPLATE_CLASS_MAKEUP_ADDED") ??
         "CLASS_MAKEUP_ADDED";
+    case "class_time_changed":
+      return Deno.env.get("KAKAO_TEMPLATE_CLASS_TIME_CHANGED") ??
+        "CLASS_TIME_CHANGED";
     default:
       return Deno.env.get("KAKAO_TEMPLATE_DEFAULT") ?? "DEFAULT_NOTICE";
   }
@@ -4762,7 +4871,8 @@ function normalizeKakaoTemplateParams(
     put("amount", formatWon(params.amount));
   } else if (
     eventType === "class_cancelled" ||
-    eventType === "class_makeup_added"
+    eventType === "class_makeup_added" ||
+    eventType === "class_time_changed"
   ) {
     put("title", params.title);
     put("sessionDate", params.sessionDate);
@@ -4813,6 +4923,12 @@ function buildKakaoMessageText(
       return `${params.studentName ?? "학생"} 학생의 ${
         params.className ?? "수업"
       } 보강 안내입니다. 일정: ${params.sessionDate ?? ""} ${
+        params.startsAt ?? ""
+      }-${params.endsAt ?? ""}, 사유: ${params.reason ?? ""}`;
+    case "class_time_changed":
+      return `${params.studentName ?? "학생"} 학생의 ${
+        params.className ?? "수업"
+      } 시간 변경 안내입니다. 일정: ${params.sessionDate ?? ""} ${
         params.startsAt ?? ""
       }-${params.endsAt ?? ""}, 사유: ${params.reason ?? ""}`;
     default:

@@ -56,6 +56,7 @@
 - `KAKAO_TEMPLATE_PAYMENT_PAID_CONFIRMED`
 - `KAKAO_TEMPLATE_CLASS_CANCELLED`
 - `KAKAO_TEMPLATE_CLASS_MAKEUP_ADDED`
+- `KAKAO_TEMPLATE_CLASS_TIME_CHANGED`
 - `KAKAO_TEMPLATE_DEFAULT`
 
 `notification_logs`에는 `recipient_phone_masked`만 저장한다. 실제 발송 시 원문 전화번호는 `guardian_id`로 `guardians.phone`을 조회해 provider 호출에만 사용하고 로그 payload에는 저장하지 않는다.

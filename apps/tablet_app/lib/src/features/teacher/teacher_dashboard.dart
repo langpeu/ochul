@@ -1252,6 +1252,37 @@ class _ClassManagementPanelState extends State<_ClassManagementPanel> {
     }
   }
 
+  Future<void> _rescheduleToday(ManagedClass classRoom) async {
+    final result = await showDialog<_ClassTimeChangeResult>(
+      context: context,
+      builder: (context) => _ClassTimeChangeDialog(className: classRoom.name),
+    );
+    if (result == null) return;
+
+    setState(() => _processingClassId = classRoom.id);
+    try {
+      final count = await widget.service.rescheduleTodaySession(
+        classId: classRoom.id,
+        startsAt: result.startsAt,
+        endsAt: result.endsAt,
+        reason: result.reason,
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('시간 변경 안내 $count건을 요청했습니다.')));
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('시간 변경에 실패했습니다.')));
+      }
+    } finally {
+      if (mounted) setState(() => _processingClassId = null);
+    }
+  }
+
   Future<void> _editClass(ManagedClass classRoom) async {
     final result = await showDialog<_ClassEditResult>(
       context: context,
@@ -1506,6 +1537,8 @@ class _ClassManagementPanelState extends State<_ClassManagementPanel> {
                                       _cancelToday(classRoom);
                                     case _ClassAction.createMakeup:
                                       _createMakeup(classRoom);
+                                    case _ClassAction.rescheduleToday:
+                                      _rescheduleToday(classRoom);
                                     case _ClassAction.edit:
                                       _editClass(classRoom);
                                     case _ClassAction.delete:
@@ -1532,6 +1565,13 @@ class _ClassManagementPanelState extends State<_ClassManagementPanel> {
                                     child: ListTile(
                                       leading: Icon(Icons.event_repeat),
                                       title: Text('보강 추가'),
+                                    ),
+                                  ),
+                                  PopupMenuItem(
+                                    value: _ClassAction.rescheduleToday,
+                                    child: ListTile(
+                                      leading: Icon(Icons.update),
+                                      title: Text('오늘 시간 변경'),
                                     ),
                                   ),
                                   PopupMenuDivider(),
@@ -1564,7 +1604,14 @@ class _ClassManagementPanelState extends State<_ClassManagementPanel> {
   }
 }
 
-enum _ClassAction { openAttendance, cancelToday, createMakeup, edit, delete }
+enum _ClassAction {
+  openAttendance,
+  cancelToday,
+  createMakeup,
+  rescheduleToday,
+  edit,
+  delete,
+}
 
 class _ClassEditResult {
   const _ClassEditResult({
@@ -1864,6 +1911,114 @@ class _MakeupSessionResult {
   final String startsAt;
   final String endsAt;
   final String reason;
+}
+
+class _ClassTimeChangeResult {
+  const _ClassTimeChangeResult({
+    required this.startsAt,
+    required this.endsAt,
+    required this.reason,
+  });
+
+  final String startsAt;
+  final String endsAt;
+  final String reason;
+}
+
+class _ClassTimeChangeDialog extends StatefulWidget {
+  const _ClassTimeChangeDialog({required this.className});
+
+  final String className;
+
+  @override
+  State<_ClassTimeChangeDialog> createState() => _ClassTimeChangeDialogState();
+}
+
+class _ClassTimeChangeDialogState extends State<_ClassTimeChangeDialog> {
+  final _startsAtController = TextEditingController(text: '15:00');
+  final _endsAtController = TextEditingController(text: '16:00');
+  final _reasonController = TextEditingController();
+  String? _errorText;
+
+  @override
+  void dispose() {
+    _startsAtController.dispose();
+    _endsAtController.dispose();
+    _reasonController.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final startsAt = _startsAtController.text.trim();
+    final endsAt = _endsAtController.text.trim();
+    if (!_timePattern.hasMatch(startsAt) ||
+        !_timePattern.hasMatch(endsAt) ||
+        startsAt.compareTo(endsAt) >= 0) {
+      setState(() => _errorText = '시간을 확인해 주세요.');
+      return;
+    }
+    Navigator.of(context).pop(
+      _ClassTimeChangeResult(
+        startsAt: startsAt,
+        endsAt: endsAt,
+        reason: _reasonController.text.trim(),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text('${widget.className} 오늘 시간 변경'),
+      content: SizedBox(
+        width: 360,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _startsAtController,
+                    decoration: const InputDecoration(
+                      labelText: '시작',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: TextField(
+                    controller: _endsAtController,
+                    decoration: InputDecoration(
+                      labelText: '종료',
+                      errorText: _errorText,
+                      border: const OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _reasonController,
+              decoration: const InputDecoration(
+                labelText: '변경 사유',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('취소'),
+        ),
+        FilledButton(onPressed: _submit, child: const Text('변경')),
+      ],
+    );
+  }
 }
 
 class _MakeupSessionDialog extends StatefulWidget {
@@ -4821,6 +4976,7 @@ String _notificationEventLabel(String eventType) {
     'attendance_checked_in' => '출석',
     'class_cancelled' => '휴강',
     'class_makeup_added' => '보강',
+    'class_time_changed' => '시간 변경',
     'payment_due_reminder' => '납부',
     'payment_paid_confirmed' => '납부',
     _ => '알림',

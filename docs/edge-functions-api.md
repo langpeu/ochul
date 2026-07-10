@@ -83,6 +83,7 @@ Edge API 경로는 REST 스타일로 간결하고 명확하게 둔다.
 - `DELETE /classes/{classId}`: 수업 삭제 또는 비활성화
 - `POST /classes/{classId}/sessions`: 수업 회차 생성
 - `POST /classes/{classId}/sessions/open`: 오늘 출석용 수업 회차 열기
+- `PATCH /classes/{classId}/sessions/today`: 오늘 수업 시간 변경과 보호자 카카오 안내 요청
 - `PATCH /class-sessions/{classSessionId}`: 수업 회차 수정
 - `POST /classes/{classId}/sessions/cancel-today`: 오늘 수업 휴강 처리와 보호자 카카오 안내 요청
 - `POST /classes/{classId}/sessions/makeup`: 보강 수업 생성과 보호자 카카오 안내 요청

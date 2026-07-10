@@ -122,6 +122,24 @@ class ClassManagementService {
     return _readRequestedNotificationCount(data);
   }
 
+  Future<int> rescheduleTodaySession({
+    required String classId,
+    required String startsAt,
+    required String endsAt,
+    required String reason,
+  }) async {
+    final data = await edgeClient.call(
+      '/classes/$classId/sessions/today',
+      method: EdgeHttpMethod.patch,
+      body: <String, dynamic>{
+        'startsAt': startsAt,
+        'endsAt': endsAt,
+        'reason': reason,
+      },
+    );
+    return _readRequestedNotificationCount(data);
+  }
+
   int _readRequestedNotificationCount(Map<String, dynamic> data) {
     final notifications = data['notifications'];
     if (notifications is Map<String, dynamic>) {
