@@ -46,7 +46,7 @@ class PaymentManagementService {
     return PaymentStatusData.fromJson(data);
   }
 
-  Future<PaymentStatusSummary> updateStatus({
+  Future<PaymentStatusUpdateResult> updateStatus({
     required String paymentStatusId,
     required String status,
     required String note,
@@ -58,7 +58,10 @@ class PaymentManagementService {
     );
     final statusJson = data['status'];
     if (statusJson is Map<String, dynamic>) {
-      return PaymentStatusSummary.fromJson(statusJson);
+      return PaymentStatusUpdateResult(
+        status: PaymentStatusSummary.fromJson(statusJson),
+        notificationCount: _notificationCount(data),
+      );
     }
     throw const PaymentManagementException('납부 상태 변경 응답이 올바르지 않습니다.');
   }
@@ -68,6 +71,14 @@ class PaymentManagementService {
       '/payment-periods/$paymentPeriodId/unpaid/notify',
       method: EdgeHttpMethod.post,
     );
+    final notifications = data['notifications'];
+    if (notifications is Map<String, dynamic>) {
+      return notifications['requested'] as int? ?? 0;
+    }
+    return 0;
+  }
+
+  int _notificationCount(Map<String, dynamic> data) {
     final notifications = data['notifications'];
     if (notifications is Map<String, dynamic>) {
       return notifications['requested'] as int? ?? 0;
@@ -149,6 +160,16 @@ class PaymentStatusSummary {
   final int amount;
   final String status;
   final String? note;
+}
+
+class PaymentStatusUpdateResult {
+  const PaymentStatusUpdateResult({
+    required this.status,
+    required this.notificationCount,
+  });
+
+  final PaymentStatusSummary status;
+  final int notificationCount;
 }
 
 class PaymentManagementException implements Exception {

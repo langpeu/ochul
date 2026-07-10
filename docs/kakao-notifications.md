@@ -23,6 +23,7 @@
 - 한 보호자가 여러 학생을 가질 수 있으므로 알림 payload에는 항상 학생 이름과 수업 이름을 포함한다.
 - 출석 알림에는 학생 이름, 수업 이름, 출석 상태, 출석 시간을 포함한다.
 - 수업 변경 알림에는 학생 이름, 수업 이름, 기존 일정, 변경 일정, 변경 사유를 포함한다.
+- 납부 확인 알림에는 학생 이름, 납부 기간명, 납부 확인 시간, 금액을 포함한다.
 - 발송 이력은 학생별, 보호자별, 수업별로 조회 가능해야 한다.
 - 보호자 전화번호는 발송 목적에 대한 동의가 있는 경우에만 사용한다.
 - 발송 로그에는 보호자 전화번호 원문을 저장하지 않고 마스킹된 번호만 저장한다.
@@ -49,6 +50,7 @@
 - `KAKAO_TEMPLATE_ATTENDANCE_CHECKED_IN`
 - `KAKAO_TEMPLATE_ATTENDANCE_STATUS_CHANGED`
 - `KAKAO_TEMPLATE_PAYMENT_DUE_REMINDER`
+- `KAKAO_TEMPLATE_PAYMENT_PAID_CONFIRMED`
 - `KAKAO_TEMPLATE_CLASS_CANCELLED`
 - `KAKAO_TEMPLATE_CLASS_MAKEUP_ADDED`
 - `KAKAO_TEMPLATE_DEFAULT`
@@ -78,6 +80,15 @@ Provider별 필드명이 다르면 `sendKakaoProviderMessage` adapter에서만 �
 - 보호자 이름
 
 학생 직접 출석뿐 아니라 선생님이 출석, 지각, 결석, 인정결석, 조퇴 상태를 수동 저장하는 경우에도 `pending` 카카오 알림 로그를 생성한다.
+
+## 납부 알림 예시 필드
+
+- 학생 이름
+- 납부 기간명
+- 납부 마감일 또는 납부 확인 시간
+- 납부 금액
+
+선생님이 납부 상태를 `paid`로 처음 변경하면 `payment_paid_confirmed` pending 카카오 알림 로그를 생성한다. 이미 `paid`인 항목을 다시 저장하는 경우에는 중복 알림을 만들지 않는다.
 
 ## 일정 변경 알림 예시 필드
 

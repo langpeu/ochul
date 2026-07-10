@@ -116,7 +116,7 @@ Edge API 경로는 REST 스타일로 간결하고 명확하게 둔다.
 - `GET /study-rooms/{studyRoomId}/payment-periods`: 납부 기간 목록
 - `POST /study-rooms/{studyRoomId}/payment-periods`: 납부 기간 생성
 - `GET /payment-periods/{paymentPeriodId}/statuses`: 학생별 납부 상태
-- `PATCH /payment-statuses/{paymentStatusId}`: 납부 상태 변경
+- `PATCH /payment-statuses/{paymentStatusId}`: 납부 상태 변경, 납부완료 보호자 카카오 확인 알림 요청
 - `POST /payment-periods/{paymentPeriodId}/unpaid/notify`: 미납 보호자 카카오 안내 요청
 
 ### notifications

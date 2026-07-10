@@ -2249,6 +2249,12 @@ async function updatePaymentStatus(
     paymentStatusId,
     activeTeacher,
   );
+  const period = await readAccessiblePaymentPeriod(
+    db,
+    current.payment_period_id,
+    activeTeacher,
+    { allowAdmin: false },
+  );
   const paidAt = status === "paid" ? new Date().toISOString() : null;
 
   const { data: updated, error } = await db
@@ -2279,7 +2285,27 @@ async function updatePaymentStatus(
     summary: `${student.name ?? "학생"} 납부 상태를 ${status}로 변경했습니다.`,
   });
 
-  return { ok: true, status: formatPaymentStatus(updated) };
+  let createdCount = 0;
+  if (status === "paid" && current.status !== "paid") {
+    const notifications = await createPaymentPaidNotificationLogs(db, {
+      organizationId: current.organization_id,
+      studyRoomId: current.study_room_id,
+      paymentPeriodId: current.payment_period_id,
+      paymentStatusId,
+      studentId: updated.student_id,
+      studentName: stringValue(student.name) || "학생",
+      periodName: period.name,
+      paidAt: updated.paid_at,
+      amount: Number(updated.amount ?? 0),
+    });
+    createdCount = notifications.length;
+  }
+
+  return {
+    ok: true,
+    status: formatPaymentStatus(updated),
+    notifications: { requested: createdCount },
+  };
 }
 
 async function notifyUnpaidPayments(
@@ -3086,7 +3112,7 @@ async function readPaymentStatusForOwnerWrite(
   const { data, error } = await db
     .from("payment_statuses")
     .select(
-      "id, organization_id, study_room_id, payment_period_id, student_id, study_rooms!inner(owner_teacher_id)",
+      "id, organization_id, study_room_id, payment_period_id, student_id, status, study_rooms!inner(owner_teacher_id)",
     )
     .eq("id", paymentStatusId)
     .maybeSingle();
@@ -3363,6 +3389,72 @@ async function createPaymentReminderNotificationLogs(
 
   if (insertError) {
     throw new EdgeApiError(500, "카카오 미납 안내 로그 생성에 실패했습니다.");
+  }
+  return data ?? [];
+}
+
+async function createPaymentPaidNotificationLogs(
+  db: SupabaseClient,
+  input: {
+    organizationId: string;
+    studyRoomId: string;
+    paymentPeriodId: string;
+    paymentStatusId: string;
+    studentId: string;
+    studentName: string;
+    periodName: string;
+    paidAt: string | null;
+    amount: number;
+  },
+) {
+  const { data: guardians, error } = await db
+    .from("student_guardians")
+    .select("guardians!inner(id, phone, kakao_opt_in, opt_out_at, deleted_at)")
+    .eq("student_id", input.studentId);
+
+  if (error) {
+    throw new EdgeApiError(500, "보호자 알림 대상 조회에 실패했습니다.");
+  }
+
+  const eventTime = input.paidAt ?? new Date().toISOString();
+  const rows = (guardians ?? [])
+    .flatMap((row) => normalizeGuardianContact(row.guardians))
+    .filter((guardian) =>
+      guardian.kakao_opt_in === true &&
+      guardian.opt_out_at === null &&
+      guardian.deleted_at === null
+    )
+    .map((guardian) => ({
+      organization_id: input.organizationId,
+      study_room_id: input.studyRoomId,
+      student_id: input.studentId,
+      guardian_id: guardian.id,
+      event_type: "payment_paid_confirmed",
+      channel: "kakao",
+      recipient_phone_masked: maskPhone(guardian.phone),
+      student_name: input.studentName,
+      class_name: input.periodName,
+      event_time: eventTime,
+      payload: buildKakaoTemplatePayload("payment_paid_confirmed", {
+        studentName: input.studentName,
+        paymentPeriodName: input.periodName,
+        paidAt: eventTime,
+        amount: input.amount,
+        paymentPeriodId: input.paymentPeriodId,
+        paymentStatusId: input.paymentStatusId,
+      }),
+      status: "pending",
+    }));
+
+  if (rows.length === 0) return [];
+
+  const { data, error: insertError } = await db
+    .from("notification_logs")
+    .insert(rows)
+    .select("id");
+
+  if (insertError) {
+    throw new EdgeApiError(500, "카카오 납부 확인 로그 생성에 실패했습니다.");
   }
   return data ?? [];
 }
@@ -4437,6 +4529,9 @@ function kakaoTemplateCode(eventType: string) {
     case "payment_due_reminder":
       return Deno.env.get("KAKAO_TEMPLATE_PAYMENT_DUE_REMINDER") ??
         "PAYMENT_DUE_REMINDER";
+    case "payment_paid_confirmed":
+      return Deno.env.get("KAKAO_TEMPLATE_PAYMENT_PAID_CONFIRMED") ??
+        "PAYMENT_PAID_CONFIRMED";
     case "class_cancelled":
       return Deno.env.get("KAKAO_TEMPLATE_CLASS_CANCELLED") ??
         "CLASS_CANCELLED";
@@ -4477,6 +4572,10 @@ function normalizeKakaoTemplateParams(
     put("paymentPeriodName", params.paymentPeriodName);
     put("dueDate", params.dueDate);
     put("amount", formatWon(params.amount));
+  } else if (eventType === "payment_paid_confirmed") {
+    put("paymentPeriodName", params.paymentPeriodName);
+    put("paidAt", formatKakaoDateTime(params.paidAt));
+    put("amount", formatWon(params.amount));
   } else if (
     eventType === "class_cancelled" ||
     eventType === "class_makeup_added"
@@ -4512,6 +4611,12 @@ function buildKakaoMessageText(
       return `${params.studentName ?? "학생"} 학생의 ${
         params.paymentPeriodName ?? "수업료"
       } 납부 마감일은 ${params.dueDate ?? ""}입니다. 금액: ${
+        params.amount ?? ""
+      }`;
+    case "payment_paid_confirmed":
+      return `${params.studentName ?? "학생"} 학생의 ${
+        params.paymentPeriodName ?? "수업료"
+      } 납부가 확인되었습니다. 시간: ${params.paidAt ?? ""}, 금액: ${
         params.amount ?? ""
       }`;
     case "class_cancelled":

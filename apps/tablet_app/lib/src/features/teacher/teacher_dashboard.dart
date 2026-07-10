@@ -3891,11 +3891,20 @@ class _PaymentManagementPanelState extends State<_PaymentManagementPanel> {
   Future<void> _updateStatus(PaymentStatusSummary status, String next) async {
     setState(() => _processingStatusId = status.id);
     try {
-      await widget.service.updateStatus(
+      final result = await widget.service.updateStatus(
         paymentStatusId: status.id,
         status: next,
         note: '',
       );
+      if (mounted && result.notificationCount > 0) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '납부 상태를 저장하고 카카오 알림 ${result.notificationCount}건을 요청했습니다.',
+            ),
+          ),
+        );
+      }
       if (mounted) await _refresh();
     } catch (_) {
       if (mounted) {
@@ -4584,6 +4593,7 @@ String _notificationEventLabel(String eventType) {
     'class_cancelled' => '휴강',
     'class_makeup_added' => '보강',
     'payment_due_reminder' => '납부',
+    'payment_paid_confirmed' => '납부',
     _ => '알림',
   };
 }
