@@ -1,9 +1,14 @@
 import 'package:flutter/material.dart';
 
+import '../../core/app_config.dart';
+import '../../core/edge_function_client.dart';
 import '../../models/sample_data.dart';
+import 'attendance_service.dart';
 
 class StudentAttendanceScreen extends StatefulWidget {
-  const StudentAttendanceScreen({super.key});
+  const StudentAttendanceScreen({super.key, required this.config});
+
+  final AppConfig config;
 
   @override
   State<StudentAttendanceScreen> createState() =>
@@ -12,6 +17,9 @@ class StudentAttendanceScreen extends StatefulWidget {
 
 class _StudentAttendanceScreenState extends State<StudentAttendanceScreen> {
   var _selectedClass = sampleClasses.first;
+
+  AttendanceService get _attendanceService =>
+      const AttendanceService(edgeClient: EdgeFunctionClient());
 
   @override
   Widget build(BuildContext context) {
@@ -58,7 +66,12 @@ class _StudentAttendanceScreenState extends State<StudentAttendanceScreen> {
               childAspectRatio: 1.7,
               children: [
                 for (final student in _selectedClass.students)
-                  _StudentTile(student: student),
+                  _StudentTile(
+                    classSessionId: 'session-${_selectedClass.id}',
+                    student: student,
+                    attendanceService: _attendanceService,
+                    designMode: !widget.config.isSupabaseConfigured,
+                  ),
               ],
             ),
           ),
@@ -69,9 +82,17 @@ class _StudentAttendanceScreenState extends State<StudentAttendanceScreen> {
 }
 
 class _StudentTile extends StatelessWidget {
-  const _StudentTile({required this.student});
+  const _StudentTile({
+    required this.classSessionId,
+    required this.student,
+    required this.attendanceService,
+    required this.designMode,
+  });
 
+  final String classSessionId;
   final StudentSummary student;
+  final AttendanceService attendanceService;
+  final bool designMode;
 
   @override
   Widget build(BuildContext context) {
@@ -80,7 +101,12 @@ class _StudentTile extends StatelessWidget {
         borderRadius: BorderRadius.circular(8),
         onTap: () => showDialog<void>(
           context: context,
-          builder: (context) => _PinDialog(student: student),
+          builder: (context) => _PinDialog(
+            classSessionId: classSessionId,
+            student: student,
+            attendanceService: attendanceService,
+            designMode: designMode,
+          ),
         ),
         child: Padding(
           padding: const EdgeInsets.all(16),
@@ -133,31 +159,128 @@ class _StatusPill extends StatelessWidget {
 }
 
 class _PinDialog extends StatelessWidget {
-  const _PinDialog({required this.student});
+  const _PinDialog({
+    required this.classSessionId,
+    required this.student,
+    required this.attendanceService,
+    required this.designMode,
+  });
 
+  final String classSessionId;
   final StudentSummary student;
+  final AttendanceService attendanceService;
+  final bool designMode;
 
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
       title: Text('${student.name} 출석 체크'),
-      content: const TextField(
-        autofocus: true,
-        obscureText: true,
-        keyboardType: TextInputType.number,
-        decoration: InputDecoration(
-          labelText: '6자리 비밀번호',
-          border: OutlineInputBorder(),
-        ),
+      content: _PinForm(
+        classSessionId: classSessionId,
+        student: student,
+        attendanceService: attendanceService,
+        designMode: designMode,
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('취소'),
+    );
+  }
+}
+
+class _PinForm extends StatefulWidget {
+  const _PinForm({
+    required this.classSessionId,
+    required this.student,
+    required this.attendanceService,
+    required this.designMode,
+  });
+
+  final String classSessionId;
+  final StudentSummary student;
+  final AttendanceService attendanceService;
+  final bool designMode;
+
+  @override
+  State<_PinForm> createState() => _PinFormState();
+}
+
+class _PinFormState extends State<_PinForm> {
+  final _controller = TextEditingController();
+  String? _errorText;
+  var _submitting = false;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    setState(() {
+      _errorText = null;
+      _submitting = true;
+    });
+
+    try {
+      if (widget.designMode) {
+        if (!RegExp(r'^\d{6}$').hasMatch(_controller.text)) {
+          throw const AttendanceException('출결 비밀번호는 숫자 6자리여야 합니다.');
+        }
+      } else {
+        await widget.attendanceService.checkIn(
+          classSessionId: widget.classSessionId,
+          studentId: widget.student.id,
+          pin: _controller.text,
+        );
+      }
+
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('${widget.student.name} 출석 요청을 보냈습니다.')),
+        );
+      }
+    } on AttendanceException catch (error) {
+      setState(() => _errorText = error.message);
+    } catch (_) {
+      setState(() => _errorText = '출석 처리 중 문제가 발생했습니다.');
+    } finally {
+      if (mounted) {
+        setState(() => _submitting = false);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        TextField(
+          controller: _controller,
+          autofocus: true,
+          obscureText: true,
+          maxLength: 6,
+          keyboardType: TextInputType.number,
+          decoration: InputDecoration(
+            labelText: '6자리 비밀번호',
+            errorText: _errorText,
+            border: const OutlineInputBorder(),
+          ),
+          onSubmitted: (_) => _submitting ? null : _submit(),
         ),
-        FilledButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('출석'),
+        const SizedBox(height: 16),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.end,
+          children: [
+            TextButton(
+              onPressed: _submitting ? null : () => Navigator.pop(context),
+              child: const Text('취소'),
+            ),
+            const SizedBox(width: 8),
+            FilledButton(
+              onPressed: _submitting ? null : _submit,
+              child: Text(_submitting ? '처리 중' : '출석'),
+            ),
+          ],
         ),
       ],
     );

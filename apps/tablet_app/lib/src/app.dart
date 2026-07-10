@@ -64,7 +64,7 @@ class _AppShellState extends State<AppShell> {
         label: '출석',
         icon: Icons.fact_check_outlined,
         selectedIcon: Icons.fact_check,
-        child: const StudentAttendanceScreen(),
+        child: StudentAttendanceScreen(config: widget.config),
       ),
       _Destination(
         label: '선생님',
