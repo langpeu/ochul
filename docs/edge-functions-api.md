@@ -109,11 +109,14 @@ Edge API 경로는 REST 스타일로 간결하고 명확하게 둔다.
 
 ### attendance
 
-- `GET /attendance/today`: 오늘 수업 목록
+- `GET /attendance/today`: 오늘 열린 수업 목록
+  - 좌석 배치가 있는 수업은 `layout.seats`, `layout.assignments`, `layout.occupiedSeats`를 포함한다.
 - `GET /class-sessions/{classSessionId}/attendance`: 수업별 출석 상태
 - `PATCH /class-sessions/{classSessionId}/attendance`: 학생별 출결 상태 수동 저장, 보호자 카카오 알림 요청
 - `POST /class-sessions/{classSessionId}/check-in`: 학생 6자리 비밀번호 출석 체크
 - `POST /class-sessions/{classSessionId}/seat-check-in`: 학생 아바타 좌석 드래그앤드롭 출석 체크
+  - body: `{ studentId, seatId, pin }`
+  - 서버에서 수업 등록, 좌석 배치 범위, 고정 좌석 배정, 같은 회차 좌석 중복, 6자리 PIN을 최종 검증한다.
 - `PATCH /attendance-records/{attendanceRecordId}`: 선생님 수동 출결 수정
 
 ### payments

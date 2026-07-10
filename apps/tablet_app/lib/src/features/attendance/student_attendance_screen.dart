@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import '../../core/app_config.dart';
@@ -104,6 +106,12 @@ class _LiveAttendanceViewState extends State<_LiveAttendanceView> {
     _sessionsFuture = widget.attendanceService.fetchTodaySessions();
   }
 
+  void _refreshSessions() {
+    setState(() {
+      _sessionsFuture = widget.attendanceService.fetchTodaySessions();
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return Padding(
@@ -171,20 +179,30 @@ class _LiveAttendanceViewState extends State<_LiveAttendanceView> {
               ),
               const SizedBox(height: 16),
               Expanded(
-                child: GridView.count(
-                  crossAxisCount: 3,
-                  mainAxisSpacing: 12,
-                  crossAxisSpacing: 12,
-                  childAspectRatio: 1.7,
-                  children: [
-                    for (final student in selectedSession.students)
-                      _LiveStudentTile(
-                        classSessionId: selectedSession.id,
-                        student: student,
+                child:
+                    selectedSession.layout != null &&
+                        selectedSession.layout!.seats.isNotEmpty
+                    ? _LiveSeatAttendanceBoard(
+                        session: selectedSession,
+                        layout: selectedSession.layout!,
                         attendanceService: widget.attendanceService,
+                        onCheckedIn: _refreshSessions,
+                      )
+                    : GridView.count(
+                        crossAxisCount: 3,
+                        mainAxisSpacing: 12,
+                        crossAxisSpacing: 12,
+                        childAspectRatio: 1.7,
+                        children: [
+                          for (final student in selectedSession.students)
+                            _LiveStudentTile(
+                              classSessionId: selectedSession.id,
+                              student: student,
+                              attendanceService: widget.attendanceService,
+                              onCheckedIn: _refreshSessions,
+                            ),
+                        ],
                       ),
-                  ],
-                ),
               ),
             ],
           );
@@ -199,11 +217,13 @@ class _LiveStudentTile extends StatelessWidget {
     required this.classSessionId,
     required this.student,
     required this.attendanceService,
+    required this.onCheckedIn,
   });
 
   final String classSessionId;
   final AttendanceStudent student;
   final AttendanceService attendanceService;
+  final VoidCallback onCheckedIn;
 
   @override
   Widget build(BuildContext context) {
@@ -216,6 +236,7 @@ class _LiveStudentTile extends StatelessWidget {
             classSessionId: classSessionId,
             student: student,
             attendanceService: attendanceService,
+            onCheckedIn: onCheckedIn,
           ),
         ),
         child: Padding(
@@ -236,6 +257,279 @@ class _LiveStudentTile extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+class _LiveSeatAttendanceBoard extends StatelessWidget {
+  const _LiveSeatAttendanceBoard({
+    required this.session,
+    required this.layout,
+    required this.attendanceService,
+    required this.onCheckedIn,
+  });
+
+  final AttendanceSession session;
+  final AttendanceClassroomLayout layout;
+  final AttendanceService attendanceService;
+  final VoidCallback onCheckedIn;
+
+  @override
+  Widget build(BuildContext context) {
+    final waitingStudents = session.students
+        .where((student) => student.status == 'waiting')
+        .toList(growable: false);
+    final studentsById = {
+      for (final student in session.students) student.id: student,
+    };
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          height: 94,
+          child: waitingStudents.isEmpty
+              ? const Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text('출석 대기 중인 학생이 없습니다.'),
+                )
+              : ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  itemBuilder: (context, index) {
+                    final student = waitingStudents[index];
+                    return Draggable<AttendanceStudent>(
+                      data: student,
+                      feedback: Material(
+                        color: Colors.transparent,
+                        child: _StudentDragChip(
+                          student: student,
+                          elevated: true,
+                        ),
+                      ),
+                      childWhenDragging: Opacity(
+                        opacity: 0.35,
+                        child: _StudentDragChip(student: student),
+                      ),
+                      child: _StudentDragChip(student: student),
+                    );
+                  },
+                  separatorBuilder: (_, _) => const SizedBox(width: 10),
+                  itemCount: waitingStudents.length,
+                ),
+        ),
+        const SizedBox(height: 12),
+        Expanded(
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: const Color(0xFFF7F8FA),
+              border: Border.all(color: const Color(0xFFE0E4EA)),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final boardWidth = constraints.maxWidth;
+                  final boardHeight = constraints.maxHeight;
+                  return Stack(
+                    children: [
+                      for (final seat in layout.seats)
+                        _PositionedAttendanceSeat(
+                          seat: seat,
+                          layout: layout,
+                          boardWidth: boardWidth,
+                          boardHeight: boardHeight,
+                          assignedStudent:
+                              studentsById[layout
+                                  .assignmentFor(seat.id)
+                                  ?.studentId],
+                          occupancy: layout.occupancyFor(seat.id),
+                          onStudentDropped: (student) =>
+                              _openSeatPinDialog(context, seat, student),
+                        ),
+                    ],
+                  );
+                },
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  void _openSeatPinDialog(
+    BuildContext context,
+    AttendanceSeat seat,
+    AttendanceStudent student,
+  ) {
+    showDialog<void>(
+      context: context,
+      builder: (context) => _LivePinDialog(
+        classSessionId: session.id,
+        seatId: seat.id,
+        student: student,
+        attendanceService: attendanceService,
+        onCheckedIn: onCheckedIn,
+      ),
+    );
+  }
+}
+
+class _StudentDragChip extends StatelessWidget {
+  const _StudentDragChip({required this.student, this.elevated = false});
+
+  final AttendanceStudent student;
+  final bool elevated;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      elevation: elevated ? 6 : 0,
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        width: 168,
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          border: Border.all(color: const Color(0xFFD4DAE2)),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Row(
+          children: [
+            CircleAvatar(
+              radius: 18,
+              child: Text(student.name.characters.first),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    student.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
+                  Text(
+                    student.code,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _PositionedAttendanceSeat extends StatelessWidget {
+  const _PositionedAttendanceSeat({
+    required this.seat,
+    required this.layout,
+    required this.boardWidth,
+    required this.boardHeight,
+    required this.assignedStudent,
+    required this.occupancy,
+    required this.onStudentDropped,
+  });
+
+  final AttendanceSeat seat;
+  final AttendanceClassroomLayout layout;
+  final double boardWidth;
+  final double boardHeight;
+  final AttendanceStudent? assignedStudent;
+  final AttendanceSeatOccupancy? occupancy;
+  final ValueChanged<AttendanceStudent> onStudentDropped;
+
+  @override
+  Widget build(BuildContext context) {
+    const seatWidth = 132.0;
+    const seatHeight = 86.0;
+    final left = _scaledPosition(seat.deskX, layout.canvasWidth, boardWidth);
+    final top = _scaledPosition(seat.deskY, layout.canvasHeight, boardHeight);
+    final clampedLeft = left.clamp(0, math.max(0, boardWidth - seatWidth));
+    final clampedTop = top.clamp(0, math.max(0, boardHeight - seatHeight));
+    final isOccupied = occupancy != null;
+
+    return Positioned(
+      left: clampedLeft.toDouble(),
+      top: clampedTop.toDouble(),
+      width: seatWidth,
+      height: seatHeight,
+      child: Transform.rotate(
+        angle: seat.rotationDegrees * math.pi / 180,
+        child: DragTarget<AttendanceStudent>(
+          onWillAcceptWithDetails: (details) {
+            if (isOccupied) return false;
+            return assignedStudent == null ||
+                assignedStudent!.id == details.data.id;
+          },
+          onAcceptWithDetails: (details) => onStudentDropped(details.data),
+          builder: (context, candidates, rejected) {
+            final active = candidates.isNotEmpty;
+            return AnimatedContainer(
+              duration: const Duration(milliseconds: 120),
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: isOccupied
+                    ? const Color(0xFFEAF6EF)
+                    : active
+                    ? const Color(0xFFE8F0FE)
+                    : Colors.white,
+                border: Border.all(
+                  color: isOccupied
+                      ? const Color(0xFF1B7F4D)
+                      : active
+                      ? const Color(0xFF3F6FB5)
+                      : const Color(0xFFD4DAE2),
+                  width: active ? 2 : 1,
+                ),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    seat.label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.labelLarge,
+                  ),
+                  Text(
+                    occupancy?.studentName ?? assignedStudent?.name ?? '빈 좌석',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
+                  Text(
+                    isOccupied
+                        ? _attendanceStatusLabel(occupancy!.status)
+                        : '드래그',
+                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                      color: isOccupied
+                          ? const Color(0xFF1B7F4D)
+                          : const Color(0xFF59636E),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  double _scaledPosition(double value, double canvasSize, double boardSize) {
+    if (canvasSize <= 0) return 0;
+    return value / canvasSize * boardSize;
   }
 }
 
@@ -355,11 +649,15 @@ class _LivePinDialog extends StatelessWidget {
     required this.classSessionId,
     required this.student,
     required this.attendanceService,
+    required this.onCheckedIn,
+    this.seatId,
   });
 
   final String classSessionId;
+  final String? seatId;
   final AttendanceStudent student;
   final AttendanceService attendanceService;
+  final VoidCallback onCheckedIn;
 
   @override
   Widget build(BuildContext context) {
@@ -367,8 +665,10 @@ class _LivePinDialog extends StatelessWidget {
       title: Text('${student.name} 출석 체크'),
       content: _LivePinForm(
         classSessionId: classSessionId,
+        seatId: seatId,
         student: student,
         attendanceService: attendanceService,
+        onCheckedIn: onCheckedIn,
       ),
     );
   }
@@ -379,11 +679,15 @@ class _LivePinForm extends StatefulWidget {
     required this.classSessionId,
     required this.student,
     required this.attendanceService,
+    required this.onCheckedIn,
+    this.seatId,
   });
 
   final String classSessionId;
+  final String? seatId;
   final AttendanceStudent student;
   final AttendanceService attendanceService;
+  final VoidCallback onCheckedIn;
 
   @override
   State<_LivePinForm> createState() => _LivePinFormState();
@@ -406,13 +710,24 @@ class _LivePinFormState extends State<_LivePinForm> {
       _submitting = true;
     });
     try {
-      await widget.attendanceService.checkIn(
-        classSessionId: widget.classSessionId,
-        studentId: widget.student.id,
-        pin: _controller.text,
-      );
+      final seatId = widget.seatId;
+      if (seatId == null) {
+        await widget.attendanceService.checkIn(
+          classSessionId: widget.classSessionId,
+          studentId: widget.student.id,
+          pin: _controller.text,
+        );
+      } else {
+        await widget.attendanceService.seatCheckIn(
+          classSessionId: widget.classSessionId,
+          studentId: widget.student.id,
+          seatId: seatId,
+          pin: _controller.text,
+        );
+      }
       if (mounted) {
         Navigator.pop(context);
+        widget.onCheckedIn();
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('${widget.student.name} 출석 요청을 보냈습니다.')),
         );

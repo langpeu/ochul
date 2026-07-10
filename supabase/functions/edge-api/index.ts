@@ -392,6 +392,13 @@ async function routeEdgeRequest(
     return await checkInStudent(checkInMatch[1], body, context);
   }
 
+  const seatCheckInMatch = path.match(
+    /^\/class-sessions\/([^/]+)\/seat-check-in$/,
+  );
+  if (method === "POST" && seatCheckInMatch) {
+    return await seatCheckInStudent(seatCheckInMatch[1], body, context);
+  }
+
   throw new EdgeApiError(404, "지원하지 않는 API 경로입니다.");
 }
 
@@ -1732,6 +1739,11 @@ async function listTodayAttendance(
       scheduleText: normalizeJoinedObject(session.classes).schedule_text,
       startsAt: session.starts_at,
       endsAt: session.ends_at,
+      layout: await readAttendanceClassroomLayout(
+        db,
+        session.class_id,
+        session.id,
+      ),
       students,
     });
   }
@@ -3067,6 +3079,116 @@ async function checkInStudent(
   };
 }
 
+async function seatCheckInStudent(
+  classSessionId: string,
+  body: Record<string, unknown>,
+  { db, teacher }: AppContext,
+): Promise<Record<string, unknown>> {
+  if (!teacher) throw new EdgeApiError(403, "선생님 프로필이 필요합니다.");
+
+  const studentId = stringValue(body.studentId);
+  const seatId = stringValue(body.seatId);
+  const pin = stringValue(body.pin);
+
+  assertUuid(classSessionId, "수업 회차 정보가 올바르지 않습니다.");
+  assertUuid(studentId, "학생 정보가 올바르지 않습니다.");
+  assertUuid(seatId, "좌석 정보가 올바르지 않습니다.");
+  if (!pinPattern.test(pin)) {
+    throw new EdgeApiError(400, "출결 비밀번호는 숫자 6자리여야 합니다.");
+  }
+
+  const session = await readClassSession(db, classSessionId);
+  await assertStudyRoomAccess(db, teacher, session.study_room_id, {
+    allowAdmin: false,
+  });
+
+  if (session.status !== "open") {
+    throw new EdgeApiError(409, "현재 출석 체크가 열려있는 수업이 아닙니다.");
+  }
+
+  const student = await readStudent(db, studentId, session.study_room_id);
+  await assertStudentEnrollment(db, session.class_id, studentId);
+
+  const pinMatches = await verifyStudentPin(db, studentId, pin);
+  if (!pinMatches) {
+    throw new EdgeApiError(401, "출결 비밀번호가 일치하지 않습니다.");
+  }
+
+  const existingRecord = await readExistingAttendance(
+    db,
+    classSessionId,
+    studentId,
+  );
+  if (existingRecord) {
+    return {
+      ok: true,
+      alreadyCheckedIn: true,
+      attendance: {
+        id: existingRecord.id,
+        status: existingRecord.status,
+        checkedInAt: existingRecord.checked_in_at,
+      },
+    };
+  }
+
+  await assertSeatCheckInScope(db, {
+    classId: session.class_id,
+    classSessionId,
+    studentId,
+    seatId,
+  });
+
+  const attendance = await createAttendanceRecord(db, {
+    organizationId: session.organization_id,
+    studyRoomId: session.study_room_id,
+    classSessionId,
+    studentId,
+    teacherId: teacher.id,
+    classroomSeatId: seatId,
+    checkedInMethod: "seat_pin",
+  });
+
+  const classInfo = await readClassInfo(db, session.class_id);
+  const notifications = await createAttendanceNotificationLogs(db, {
+    organizationId: session.organization_id,
+    studyRoomId: session.study_room_id,
+    classId: session.class_id,
+    classSessionId,
+    attendanceRecordId: attendance.id,
+    studentId,
+    studentName: student.name,
+    className: classInfo.name,
+    attendanceStatus: "present",
+    checkedInAt: attendance.checked_in_at,
+  });
+
+  await createAuditLog(db, {
+    organizationId: session.organization_id,
+    studyRoomId: session.study_room_id,
+    actorTeacherId: teacher.id,
+    studentId,
+    classId: session.class_id,
+    classSessionId,
+    entityId: attendance.id,
+    title: "학생 좌석 출석 체크",
+    summary:
+      `${student.name} 학생이 ${classInfo.name} 수업에 좌석 출석했습니다.`,
+  });
+
+  return {
+    ok: true,
+    alreadyCheckedIn: false,
+    attendance: {
+      id: attendance.id,
+      status: attendance.status,
+      checkedInAt: attendance.checked_in_at,
+    },
+    notifications: {
+      requested: notifications.length,
+    },
+  };
+}
+
 async function readClassSession(db: SupabaseClient, classSessionId: string) {
   const { data, error } = await db
     .from("class_sessions")
@@ -3301,6 +3423,105 @@ async function formatClassroomLayout(
   };
 }
 
+async function readAttendanceClassroomLayout(
+  db: SupabaseClient,
+  classId: string,
+  classSessionId: string,
+) {
+  const layout = await readActiveClassroomLayout(db, classId);
+  if (!layout) return null;
+
+  const { data: seats, error: seatsError } = await db
+    .from("classroom_seats")
+    .select(
+      "id, label, desk_x, desk_y, seat_x, seat_y, rotation_degrees, display_order",
+    )
+    .eq("classroom_layout_id", layout.id)
+    .eq("active", true)
+    .order("display_order", { ascending: true });
+  if (seatsError) throw new EdgeApiError(500, "좌석 조회에 실패했습니다.");
+
+  const { data: assignments, error: assignmentsError } = await db
+    .from("student_seat_assignments")
+    .select("classroom_seat_id, student_id, students!inner(name, student_code)")
+    .eq("classroom_layout_id", layout.id)
+    .eq("active", true);
+  if (assignmentsError) {
+    throw new EdgeApiError(500, "좌석 배정 조회에 실패했습니다.");
+  }
+
+  const { data: occupiedSeats, error: occupiedSeatsError } = await db
+    .from("attendance_records")
+    .select(
+      "classroom_seat_id, student_id, status, checked_in_at, students!inner(name, student_code)",
+    )
+    .eq("class_session_id", classSessionId)
+    .not("classroom_seat_id", "is", null);
+  if (occupiedSeatsError) {
+    throw new EdgeApiError(500, "좌석 출석 상태 조회에 실패했습니다.");
+  }
+
+  return {
+    id: layout.id,
+    name: layout.name,
+    canvasWidth: Number(layout.canvas_width ?? 1000),
+    canvasHeight: Number(layout.canvas_height ?? 700),
+    seats: (seats ?? []).map(formatClassroomSeat),
+    assignments: (assignments ?? []).map(formatSeatAssignment),
+    occupiedSeats: (occupiedSeats ?? []).map(formatSeatOccupancy),
+  };
+}
+
+async function assertSeatCheckInScope(
+  db: SupabaseClient,
+  input: {
+    classId: string;
+    classSessionId: string;
+    studentId: string;
+    seatId: string;
+  },
+) {
+  const layout = await readActiveClassroomLayout(db, input.classId);
+  if (!layout) throw new EdgeApiError(400, "교실 배치가 없는 수업입니다.");
+
+  const { data: seat, error: seatError } = await db
+    .from("classroom_seats")
+    .select("id")
+    .eq("id", input.seatId)
+    .eq("classroom_layout_id", layout.id)
+    .eq("active", true)
+    .maybeSingle();
+  if (seatError) throw new EdgeApiError(500, "좌석 범위 확인에 실패했습니다.");
+  if (!seat) throw new EdgeApiError(400, "좌석 정보가 올바르지 않습니다.");
+
+  const { data: assignment, error: assignmentError } = await db
+    .from("student_seat_assignments")
+    .select("student_id")
+    .eq("classroom_layout_id", layout.id)
+    .eq("classroom_seat_id", input.seatId)
+    .eq("active", true)
+    .maybeSingle();
+  if (assignmentError) {
+    throw new EdgeApiError(500, "좌석 배정 확인에 실패했습니다.");
+  }
+  if (assignment && assignment.student_id !== input.studentId) {
+    throw new EdgeApiError(409, "다른 학생에게 배정된 좌석입니다.");
+  }
+
+  const { data: occupiedSeat, error: occupiedSeatError } = await db
+    .from("attendance_records")
+    .select("id, student_id")
+    .eq("class_session_id", input.classSessionId)
+    .eq("classroom_seat_id", input.seatId)
+    .maybeSingle();
+  if (occupiedSeatError) {
+    throw new EdgeApiError(500, "좌석 출석 중복 확인에 실패했습니다.");
+  }
+  if (occupiedSeat && occupiedSeat.student_id !== input.studentId) {
+    throw new EdgeApiError(409, "이미 사용 중인 좌석입니다.");
+  }
+}
+
 async function assertSeatAssignmentScope(
   db: SupabaseClient,
   layoutId: string,
@@ -3499,6 +3720,8 @@ async function createAttendanceRecord(
     classSessionId: string;
     studentId: string;
     teacherId: string;
+    classroomSeatId?: string;
+    checkedInMethod?: string;
   },
 ) {
   const { data, error } = await db
@@ -3510,7 +3733,8 @@ async function createAttendanceRecord(
       student_id: input.studentId,
       status: "present",
       checked_in_at: new Date().toISOString(),
-      checked_in_method: "student_pin",
+      checked_in_method: input.checkedInMethod ?? "student_pin",
+      classroom_seat_id: input.classroomSeatId ?? null,
       created_by_teacher_id: input.teacherId,
       updated_by_teacher_id: input.teacherId,
     })
@@ -4643,6 +4867,18 @@ function formatSeatAssignment(row: Record<string, unknown>) {
     studentId: row.student_id,
     studentName: student.name,
     studentCode: student.student_code,
+  };
+}
+
+function formatSeatOccupancy(row: Record<string, unknown>) {
+  const student = normalizeJoinedObject(row.students);
+  return {
+    seatId: row.classroom_seat_id,
+    studentId: row.student_id,
+    studentName: student.name,
+    studentCode: student.student_code,
+    status: row.status,
+    checkedInAt: row.checked_in_at,
   };
 }
 
