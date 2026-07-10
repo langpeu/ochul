@@ -356,6 +356,8 @@ create table notification_logs (
   class_id uuid references classes(id) on delete set null,
   class_session_id uuid references class_sessions(id) on delete set null,
   attendance_record_id uuid references attendance_records(id) on delete set null,
+  payment_period_id uuid references payment_periods(id) on delete set null,
+  payment_status_id uuid references payment_statuses(id) on delete set null,
   event_type text not null,
   channel text not null default 'kakao',
   recipient_phone_masked text not null,
@@ -427,6 +429,8 @@ create index idx_notification_guardian on notification_logs(guardian_id, created
 create index idx_notification_class on notification_logs(class_id, created_at desc);
 create index idx_notification_study_room on notification_logs(study_room_id, created_at desc);
 create index idx_notification_retry_of on notification_logs(retry_of_notification_id);
+create index idx_notification_payment_status on notification_logs(payment_status_id, event_type)
+  where payment_status_id is not null;
 create index idx_audit_logs_study_room on audit_logs(study_room_id, created_at desc);
 create index idx_audit_logs_actor on audit_logs(actor_teacher_id, created_at desc);
 create index idx_audit_logs_entity on audit_logs(entity_type, action, created_at desc);

@@ -40,7 +40,7 @@ type AppContext = {
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type",
+    "authorization, x-client-info, apikey, content-type, x-ochul-job-secret",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
@@ -60,6 +60,11 @@ serve(async (request) => {
   try {
     const payload = await readPayload(request);
     const db = createServiceClient();
+    if (isInternalJobPath(payload.path)) {
+      requireInternalJobSecret(request);
+      const response = await routeInternalJobRequest(payload, { db });
+      return json(response);
+    }
     const authUser = await requireAuthUser(request, db);
     const teacher = await readTeacherByAuthUser(db, authUser.id);
     const response = await routeEdgeRequest(payload, { db, authUser, teacher });
@@ -68,6 +73,21 @@ serve(async (request) => {
     return handleError(error);
   }
 });
+
+async function routeInternalJobRequest(
+  payload: EdgeRequest,
+  context: { db: SupabaseClient },
+): Promise<Record<string, unknown>> {
+  const method = normalizeMethod(payload.method);
+  const path = normalizePath(payload.path);
+  const body = payload.body ?? {};
+
+  if (method === "POST" && path === "/jobs/payments/unpaid/notify-due") {
+    return await notifyDueUnpaidPayments(body, context);
+  }
+
+  throw new EdgeApiError(404, "지원하지 않는 내부 작업 경로입니다.");
+}
 
 async function routeEdgeRequest(
   payload: EdgeRequest,
@@ -2333,22 +2353,11 @@ async function notifyUnpaidPayments(
 
   if (error) throw new EdgeApiError(500, "미납 대상 조회에 실패했습니다.");
 
-  let createdCount = 0;
-  for (const paymentStatus of unpaidStatuses ?? []) {
-    const student = normalizeJoinedObject(paymentStatus.students);
-    const notifications = await createPaymentReminderNotificationLogs(db, {
-      organizationId: period.organization_id,
-      studyRoomId: period.study_room_id,
-      paymentPeriodId,
-      paymentStatusId: paymentStatus.id,
-      studentId: paymentStatus.student_id,
-      studentName: stringValue(student.name) || "학생",
-      periodName: period.name,
-      dueDate: period.due_date,
-      amount: Number(paymentStatus.amount ?? 0),
-    });
-    createdCount += notifications.length;
-  }
+  const createdCount = await createPaymentReminderLogsForStatuses(
+    db,
+    period,
+    unpaidStatuses ?? [],
+  );
 
   await createPaymentAuditLog(db, {
     organizationId: period.organization_id,
@@ -2364,6 +2373,93 @@ async function notifyUnpaidPayments(
     ok: true,
     notifications: { requested: createdCount },
   };
+}
+
+async function notifyDueUnpaidPayments(
+  body: Record<string, unknown>,
+  { db }: { db: SupabaseClient },
+): Promise<Record<string, unknown>> {
+  const dueInDays = normalizeLimit(body.dueInDays, 3, 30);
+  const periodLimit = normalizeLimit(body.periodLimit, 100, 500);
+  const today = kstDateString(new Date());
+  const dueUntil = kstDateString(addDays(new Date(), dueInDays));
+
+  const { data: periods, error: periodError } = await db
+    .from("payment_periods")
+    .select("id, organization_id, study_room_id, name, due_date")
+    .gte("due_date", today)
+    .lte("due_date", dueUntil)
+    .order("due_date", { ascending: true })
+    .limit(periodLimit);
+
+  if (periodError) {
+    throw new EdgeApiError(
+      500,
+      "자동 미납 안내 대상 기간 조회에 실패했습니다.",
+    );
+  }
+
+  let requested = 0;
+  let statusCount = 0;
+  for (const period of periods ?? []) {
+    const { data: unpaidStatuses, error } = await db
+      .from("payment_statuses")
+      .select("id, student_id, amount, status, students!inner(id, name)")
+      .eq("payment_period_id", period.id)
+      .in("status", ["unpaid", "partial"]);
+
+    if (error) {
+      throw new EdgeApiError(
+        500,
+        "자동 미납 안내 대상 학생 조회에 실패했습니다.",
+      );
+    }
+
+    statusCount += unpaidStatuses?.length ?? 0;
+    requested += await createPaymentReminderLogsForStatuses(
+      db,
+      period,
+      unpaidStatuses ?? [],
+    );
+  }
+
+  return {
+    ok: true,
+    dueWindow: { from: today, to: dueUntil, dueInDays },
+    periods: { scanned: periods?.length ?? 0 },
+    paymentStatuses: { matched: statusCount },
+    notifications: { requested },
+  };
+}
+
+async function createPaymentReminderLogsForStatuses(
+  db: SupabaseClient,
+  period: {
+    id: string;
+    organization_id: string;
+    study_room_id: string;
+    name: string;
+    due_date: string;
+  },
+  unpaidStatuses: Record<string, unknown>[],
+) {
+  let createdCount = 0;
+  for (const paymentStatus of unpaidStatuses) {
+    const student = normalizeJoinedObject(paymentStatus.students);
+    const notifications = await createPaymentReminderNotificationLogs(db, {
+      organizationId: period.organization_id,
+      studyRoomId: period.study_room_id,
+      paymentPeriodId: period.id,
+      paymentStatusId: String(paymentStatus.id),
+      studentId: String(paymentStatus.student_id),
+      studentName: stringValue(student.name) || "학생",
+      periodName: period.name,
+      dueDate: period.due_date,
+      amount: Number(paymentStatus.amount ?? 0),
+    });
+    createdCount += notifications.length;
+  }
+  return createdCount;
 }
 
 async function createStudent(
@@ -3342,6 +3438,15 @@ async function createPaymentReminderNotificationLogs(
     amount: number;
   },
 ) {
+  if (
+    await hasPaymentNotificationLog(db, {
+      eventType: "payment_due_reminder",
+      paymentStatusId: input.paymentStatusId,
+    })
+  ) {
+    return [];
+  }
+
   const { data: guardians, error } = await db
     .from("student_guardians")
     .select("guardians!inner(id, phone, kakao_opt_in, opt_out_at, deleted_at)")
@@ -3363,6 +3468,8 @@ async function createPaymentReminderNotificationLogs(
       study_room_id: input.studyRoomId,
       student_id: input.studentId,
       guardian_id: guardian.id,
+      payment_period_id: input.paymentPeriodId,
+      payment_status_id: input.paymentStatusId,
       event_type: "payment_due_reminder",
       channel: "kakao",
       recipient_phone_masked: maskPhone(guardian.phone),
@@ -3407,6 +3514,15 @@ async function createPaymentPaidNotificationLogs(
     amount: number;
   },
 ) {
+  if (
+    await hasPaymentNotificationLog(db, {
+      eventType: "payment_paid_confirmed",
+      paymentStatusId: input.paymentStatusId,
+    })
+  ) {
+    return [];
+  }
+
   const { data: guardians, error } = await db
     .from("student_guardians")
     .select("guardians!inner(id, phone, kakao_opt_in, opt_out_at, deleted_at)")
@@ -3429,6 +3545,8 @@ async function createPaymentPaidNotificationLogs(
       study_room_id: input.studyRoomId,
       student_id: input.studentId,
       guardian_id: guardian.id,
+      payment_period_id: input.paymentPeriodId,
+      payment_status_id: input.paymentStatusId,
       event_type: "payment_paid_confirmed",
       channel: "kakao",
       recipient_phone_masked: maskPhone(guardian.phone),
@@ -3457,6 +3575,27 @@ async function createPaymentPaidNotificationLogs(
     throw new EdgeApiError(500, "카카오 납부 확인 로그 생성에 실패했습니다.");
   }
   return data ?? [];
+}
+
+async function hasPaymentNotificationLog(
+  db: SupabaseClient,
+  input: {
+    eventType: "payment_due_reminder" | "payment_paid_confirmed";
+    paymentStatusId: string;
+  },
+) {
+  const { data, error } = await db
+    .from("notification_logs")
+    .select("id")
+    .eq("event_type", input.eventType)
+    .eq("payment_status_id", input.paymentStatusId)
+    .neq("status", "cancelled")
+    .limit(1);
+
+  if (error) {
+    throw new EdgeApiError(500, "카카오 납부 알림 중복 확인에 실패했습니다.");
+  }
+  return (data ?? []).length > 0;
 }
 
 async function createClassChangeNotificationLogs(
@@ -4079,6 +4218,22 @@ function normalizeLimit(value: unknown, fallback: number, maximum: number) {
   const limit = Number(value ?? fallback);
   if (!Number.isInteger(limit) || limit < 1) return fallback;
   return Math.min(limit, maximum);
+}
+
+function addDays(date: Date, days: number) {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function kstDateString(date: Date) {
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Seoul",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  return formatter.format(date);
 }
 
 function normalizeStudentStatus(value: unknown) {
@@ -4706,6 +4861,21 @@ function requireAdminTeacher(teacher: TeacherContext | null) {
     throw new EdgeApiError(403, "관리자 권한이 필요합니다.");
   }
   return activeTeacher;
+}
+
+function isInternalJobPath(path: unknown) {
+  return typeof path === "string" && normalizePath(path).startsWith("/jobs/");
+}
+
+function requireInternalJobSecret(request: Request) {
+  const configuredSecret = Deno.env.get("OCHUL_INTERNAL_JOB_SECRET");
+  if (!configuredSecret) {
+    throw new EdgeApiError(500, "내부 작업 secret이 설정되지 않았습니다.");
+  }
+  const requestSecret = request.headers.get("x-ochul-job-secret");
+  if (requestSecret !== configuredSecret) {
+    throw new EdgeApiError(401, "내부 작업 인증에 실패했습니다.");
+  }
 }
 
 function maskPhone(phone: string) {

@@ -38,12 +38,15 @@
 5. 결과를 `notification_logs`의 `sent` 또는 `failed` 상태로 저장
 6. 실패 건은 선생님 보드의 카카오 탭에서 재발송 요청 가능
 
+수업료 미납 마감 전 안내는 Supabase Scheduler가 `POST /jobs/payments/unpaid/notify-due`를 매일 호출해 생성한다. 기본값은 오늘부터 3일 이내 마감되는 납부 기간이며, `payment_status_id + event_type` 기준으로 이미 생성된 안내가 있으면 중복 생성하지 않는다.
+
 ## Edge Function 환경변수
 
 서버 비밀값은 Supabase Edge Function secret으로만 설정한다. Flutter 앱이나 공개 repo에는 넣지 않는다.
 
 - `SUPABASE_URL`
 - `SUPABASE_SERVICE_ROLE_KEY`
+- `OCHUL_INTERNAL_JOB_SECRET`
 - `KAKAO_PROVIDER_ENDPOINT`
 - `KAKAO_PROVIDER_API_KEY`
 - `KAKAO_SENDER_KEY`

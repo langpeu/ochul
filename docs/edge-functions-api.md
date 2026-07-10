@@ -118,6 +118,9 @@ Edge API 경로는 REST 스타일로 간결하고 명확하게 둔다.
 - `GET /payment-periods/{paymentPeriodId}/statuses`: 학생별 납부 상태
 - `PATCH /payment-statuses/{paymentStatusId}`: 납부 상태 변경, 납부완료 보호자 카카오 확인 알림 요청
 - `POST /payment-periods/{paymentPeriodId}/unpaid/notify`: 미납 보호자 카카오 안내 요청
+- `POST /jobs/payments/unpaid/notify-due`: 내부 Scheduler용 마감 전 미납 자동 안내 요청
+  - Header: `x-ochul-job-secret`
+  - Body: `{ "dueInDays": 3, "periodLimit": 100 }`
 
 ### notifications
 
@@ -152,6 +155,8 @@ Edge API 경로는 REST 스타일로 간결하고 명확하게 둔다.
 - 앱에 필요한 형태로 응답 변환
 
 데이터를 변경하는 요청은 기본적으로 공부방 소유 선생님만 허용한다. MVP의 `admin` role은 관리자 조회 화면을 위한 권한이며, 출석 체크나 수정 요청에는 자동으로 쓰기 권한을 부여하지 않는다.
+
+`/jobs/*` 내부 작업 경로는 Supabase Scheduler 또는 외부 cron에서만 호출한다. 이 경로는 사용자 JWT 대신 `OCHUL_INTERNAL_JOB_SECRET`과 `x-ochul-job-secret` 헤더로 인증하며, Flutter 앱에서는 호출하지 않는다.
 
 학생 출결 비밀번호 검증은 Edge Function에서 DB 함수 `verify_student_pin(target_student_id, plain_pin)`을 호출해 처리한다. Flutter 앱에는 비밀번호 해시나 검증 로직을 노출하지 않는다.
 
