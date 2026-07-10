@@ -119,6 +119,17 @@ async function routeEdgeRequest(
     }
   }
 
+  const openClassSessionMatch = path.match(
+    /^\/classes\/([^/]+)\/sessions\/open$/,
+  );
+  if (method === "POST" && openClassSessionMatch) {
+    return await openClassSession(openClassSessionMatch[1], context);
+  }
+
+  if (method === "GET" && path === "/attendance/today") {
+    return await listTodayAttendance(context);
+  }
+
   const checkInMatch = path.match(
     /^\/class-sessions\/([^/]+)\/check-in$/,
   );
@@ -510,6 +521,176 @@ async function saveClassStudents(
     db,
     authUser: { id: "", email: null, name: null },
     teacher: activeTeacher,
+  });
+}
+
+async function openClassSession(
+  classId: string,
+  { db, teacher }: AppContext,
+): Promise<Record<string, unknown>> {
+  const activeTeacher = requireTeacherProfile(teacher);
+  assertUuid(classId, "수업 정보가 올바르지 않습니다.");
+  const classRoom = await readAccessibleClass(db, classId, activeTeacher, {
+    allowAdmin: false,
+  });
+
+  const sessionDate = todayDateString();
+  const { data: existing, error: existingError } = await db
+    .from("class_sessions")
+    .select("id, session_date, starts_at, ends_at, status")
+    .eq("class_id", classId)
+    .eq("session_date", sessionDate)
+    .eq("status", "open")
+    .maybeSingle();
+
+  if (existingError) {
+    throw new EdgeApiError(500, "열린 수업 회차 조회에 실패했습니다.");
+  }
+  if (existing) {
+    return {
+      ok: true,
+      session: formatClassSession(existing, classRoom),
+    };
+  }
+
+  const { data: schedule, error: scheduleError } = await db
+    .from("class_schedules")
+    .select("id, starts_at, ends_at")
+    .eq("class_id", classId)
+    .eq("active", true)
+    .order("day_of_week", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  if (scheduleError) {
+    throw new EdgeApiError(500, "수업 일정 조회에 실패했습니다.");
+  }
+  if (!schedule) {
+    throw new EdgeApiError(400, "수업 일정이 먼저 필요합니다.");
+  }
+
+  const { data: session, error: sessionError } = await db
+    .from("class_sessions")
+    .insert({
+      organization_id: classRoom.organization_id,
+      study_room_id: classRoom.study_room_id,
+      class_id: classId,
+      class_schedule_id: schedule.id,
+      session_date: sessionDate,
+      starts_at: toKstIso(sessionDate, schedule.starts_at),
+      ends_at: toKstIso(sessionDate, schedule.ends_at),
+      kind: classRoom.class_kind,
+      status: "open",
+      opened_by_teacher_id: activeTeacher.id,
+    })
+    .select("id, session_date, starts_at, ends_at, status")
+    .single();
+
+  if (sessionError) {
+    throw new EdgeApiError(500, "수업 회차 열기에 실패했습니다.");
+  }
+
+  await createClassSessionAuditLog(db, {
+    organizationId: classRoom.organization_id,
+    studyRoomId: classRoom.study_room_id,
+    actorTeacherId: activeTeacher.id,
+    classId,
+    classSessionId: session.id,
+    title: "출석 회차 열기",
+    summary: `${classRoom.name} 수업의 출석 회차를 열었습니다.`,
+  });
+
+  return {
+    ok: true,
+    session: formatClassSession(session, classRoom),
+  };
+}
+
+async function listTodayAttendance(
+  { db, teacher }: AppContext,
+): Promise<Record<string, unknown>> {
+  const activeTeacher = requireTeacherProfile(teacher);
+  const { data: sessions, error } = await db
+    .from("class_sessions")
+    .select(
+      "id, study_room_id, class_id, session_date, starts_at, ends_at, status, classes!inner(id, name, class_kind, schedule_text)",
+    )
+    .eq("status", "open")
+    .eq("session_date", todayDateString())
+    .order("starts_at", { ascending: true });
+
+  if (error) throw new EdgeApiError(500, "오늘 출석 수업 조회에 실패했습니다.");
+
+  const accessibleSessions = [];
+  for (const session of sessions ?? []) {
+    try {
+      await assertStudyRoomAccess(db, activeTeacher, session.study_room_id, {
+        allowAdmin: false,
+      });
+      accessibleSessions.push(session);
+    } catch (error) {
+      if (!(error instanceof EdgeApiError) || error.status !== 403) throw error;
+    }
+  }
+
+  const formatted = [];
+  for (const session of accessibleSessions) {
+    const students = await listSessionStudents(
+      db,
+      session.id,
+      session.class_id,
+    );
+    formatted.push({
+      id: session.id,
+      classId: session.class_id,
+      className: normalizeJoinedObject(session.classes).name,
+      classKind: normalizeJoinedObject(session.classes).class_kind,
+      scheduleText: normalizeJoinedObject(session.classes).schedule_text,
+      startsAt: session.starts_at,
+      endsAt: session.ends_at,
+      students,
+    });
+  }
+
+  return { ok: true, sessions: formatted };
+}
+
+async function listSessionStudents(
+  db: SupabaseClient,
+  classSessionId: string,
+  classId: string,
+) {
+  const { data: enrollments, error: enrollmentError } = await db
+    .from("class_students")
+    .select("student_id, display_order, students!inner(id, student_code, name)")
+    .eq("class_id", classId)
+    .eq("active", true)
+    .order("display_order", { ascending: true });
+
+  if (enrollmentError) {
+    throw new EdgeApiError(500, "출석 학생 목록 조회에 실패했습니다.");
+  }
+
+  const { data: records, error: recordError } = await db
+    .from("attendance_records")
+    .select("student_id, status")
+    .eq("class_session_id", classSessionId);
+
+  if (recordError) {
+    throw new EdgeApiError(500, "출석 상태 조회에 실패했습니다.");
+  }
+  const statusByStudentId = new Map(
+    (records ?? []).map((record) => [record.student_id, record.status]),
+  );
+
+  return (enrollments ?? []).map((row) => {
+    const student = normalizeJoinedObject(row.students);
+    return {
+      id: student.id,
+      code: student.student_code,
+      name: student.name,
+      status: statusByStudentId.get(String(student.id)) ?? "waiting",
+    };
   });
 }
 
@@ -1051,6 +1232,34 @@ async function createClassStudentAuditLog(
   if (error) throw new EdgeApiError(500, "사용 히스토리 기록에 실패했습니다.");
 }
 
+async function createClassSessionAuditLog(
+  db: SupabaseClient,
+  input: {
+    organizationId: string;
+    studyRoomId: string;
+    actorTeacherId: string;
+    classId: string;
+    classSessionId: string;
+    title: string;
+    summary: string;
+  },
+) {
+  const { error } = await db.from("audit_logs").insert({
+    organization_id: input.organizationId,
+    study_room_id: input.studyRoomId,
+    actor_teacher_id: input.actorTeacherId,
+    class_id: input.classId,
+    class_session_id: input.classSessionId,
+    entity_type: "class_session",
+    entity_id: input.classSessionId,
+    action: "created",
+    title: input.title,
+    summary: input.summary,
+  });
+
+  if (error) throw new EdgeApiError(500, "사용 히스토리 기록에 실패했습니다.");
+}
+
 async function hashStudentPin(db: SupabaseClient, pin: string) {
   const { data, error } = await db.rpc("hash_student_pin", {
     plain_pin: pin,
@@ -1250,6 +1459,35 @@ function formatScheduleText(
 function trimSeconds(value: unknown) {
   const text = stringValue(value);
   return text.length >= 5 ? text.slice(0, 5) : text;
+}
+
+function todayDateString() {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Seoul",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+}
+
+function toKstIso(date: string, time: unknown) {
+  return `${date}T${trimSeconds(time)}:00+09:00`;
+}
+
+function formatClassSession(
+  session: Record<string, unknown>,
+  classRoom: Record<string, unknown>,
+) {
+  return {
+    id: session.id,
+    classId: classRoom.id,
+    className: classRoom.name,
+    classKind: classRoom.class_kind,
+    sessionDate: session.session_date,
+    startsAt: session.starts_at,
+    endsAt: session.ends_at,
+    status: session.status,
+  };
 }
 
 function requireTeacherProfile(teacher: TeacherContext | null) {

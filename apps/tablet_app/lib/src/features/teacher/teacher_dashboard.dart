@@ -500,6 +500,7 @@ class _ClassManagementPanelState extends State<_ClassManagementPanel> {
   var _classKind = 'regular';
   String? _errorText;
   var _submitting = false;
+  String? _openingClassId;
 
   @override
   void initState() {
@@ -564,6 +565,28 @@ class _ClassManagementPanelState extends State<_ClassManagementPanel> {
     } finally {
       if (mounted) {
         setState(() => _submitting = false);
+      }
+    }
+  }
+
+  Future<void> _openAttendance(ManagedClass classRoom) async {
+    setState(() => _openingClassId = classRoom.id);
+    try {
+      await widget.service.openAttendanceSession(classRoom.id);
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('${classRoom.name} 출석을 열었습니다.')));
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('출석 열기에 실패했습니다.')));
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _openingClassId = null);
       }
     }
   }
@@ -720,6 +743,21 @@ class _ClassManagementPanelState extends State<_ClassManagementPanel> {
                         title: Text(classRoom.name),
                         subtitle: Text(
                           '${_classKindLabel(classRoom.classKind)} · ${classRoom.scheduleText}',
+                        ),
+                        trailing: IconButton(
+                          tooltip: '출석 열기',
+                          icon: _openingClassId == classRoom.id
+                              ? const SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Icon(Icons.play_circle_outline),
+                          onPressed: _openingClassId == null
+                              ? () => _openAttendance(classRoom)
+                              : null,
                         ),
                       );
                     },

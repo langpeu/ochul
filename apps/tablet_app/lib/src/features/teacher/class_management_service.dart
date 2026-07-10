@@ -46,6 +46,13 @@ class ClassManagementService {
     }
     throw const ClassManagementException('수업 생성 응답이 올바르지 않습니다.');
   }
+
+  Future<void> openAttendanceSession(String classId) async {
+    await edgeClient.call(
+      '/classes/$classId/sessions/open',
+      method: EdgeHttpMethod.post,
+    );
+  }
 }
 
 class ManagedClass {
