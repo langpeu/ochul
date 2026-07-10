@@ -113,6 +113,28 @@ class ClassManagementService {
     return _readClassSession(data, '수업 회차 생성 응답이 올바르지 않습니다.');
   }
 
+  Future<ManagedClassSession> updateClassSession({
+    required String classSessionId,
+    required String sessionDate,
+    required String startsAt,
+    required String endsAt,
+    required String status,
+    required String reason,
+  }) async {
+    final data = await edgeClient.call(
+      '/class-sessions/$classSessionId',
+      method: EdgeHttpMethod.patch,
+      body: <String, dynamic>{
+        'sessionDate': sessionDate,
+        'startsAt': startsAt,
+        'endsAt': endsAt,
+        'status': status,
+        if (reason.isNotEmpty) 'reason': reason,
+      },
+    );
+    return _readClassSession(data, '수업 회차 수정 응답이 올바르지 않습니다.');
+  }
+
   Future<int> cancelTodaySession({
     required String classId,
     required String sessionDate,

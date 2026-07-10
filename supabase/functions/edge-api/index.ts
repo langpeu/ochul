@@ -399,6 +399,11 @@ async function routeEdgeRequest(
     return await listTodayAttendance(context);
   }
 
+  const classSessionMatch = path.match(/^\/class-sessions\/([^/]+)$/);
+  if (method === "PATCH" && classSessionMatch) {
+    return await updateClassSession(classSessionMatch[1], body, context);
+  }
+
   const classSessionAttendanceMatch = path.match(
     /^\/class-sessions\/([^/]+)\/attendance$/,
   );
@@ -2030,6 +2035,106 @@ async function createMakeupClassSession(
   };
 }
 
+async function updateClassSession(
+  classSessionId: string,
+  body: Record<string, unknown>,
+  { db, teacher }: AppContext,
+): Promise<Record<string, unknown>> {
+  const activeTeacher = requireTeacherProfile(teacher);
+  assertUuid(classSessionId, "수업 회차 정보가 올바르지 않습니다.");
+  const session = await readClassSessionDetail(db, classSessionId);
+  const classRoom = await readAccessibleClass(
+    db,
+    session.class_id,
+    activeTeacher,
+    { allowAdmin: false },
+  );
+
+  const sessionDate = nullableString(body.sessionDate) ?? session.session_date;
+  assertDate(sessionDate, "수업 회차 날짜가 올바르지 않습니다.");
+  const startsAt = nullableString(body.startsAt)
+    ? normalizeTime(body.startsAt, "수업 시작 시간이 올바르지 않습니다.")
+    : timeOfDayFromTimestamp(session.starts_at);
+  const endsAt = nullableString(body.endsAt)
+    ? normalizeTime(body.endsAt, "수업 종료 시간이 올바르지 않습니다.")
+    : timeOfDayFromTimestamp(session.ends_at);
+  if (startsAt >= endsAt) {
+    throw new EdgeApiError(400, "수업 종료 시간은 시작 시간 이후여야 합니다.");
+  }
+  const status = nullableString(body.status)
+    ? normalizeClassSessionStatus(body.status)
+    : session.status;
+  const reason = nullableString(body.reason);
+
+  const schedule = await readScheduleForSessionDate(
+    db,
+    session.class_id,
+    sessionDate,
+  );
+  const beforeValue = {
+    sessionDate: session.session_date,
+    startsAt: session.starts_at,
+    endsAt: session.ends_at,
+    status: session.status,
+    reason: session.change_reason,
+  };
+
+  const { data: updatedSession, error } = await db
+    .from("class_sessions")
+    .update({
+      class_schedule_id: schedule.id,
+      session_date: sessionDate,
+      starts_at: toKstIso(sessionDate, startsAt),
+      ends_at: toKstIso(sessionDate, endsAt),
+      status,
+      change_reason: reason,
+      opened_by_teacher_id: activeTeacher.id,
+    })
+    .eq("id", classSessionId)
+    .select("id, session_date, starts_at, ends_at, status")
+    .single();
+
+  if (error) throw new EdgeApiError(500, "수업 회차 수정에 실패했습니다.");
+
+  const changeType = status === "cancelled"
+    ? "cancelled"
+    : sessionDate !== session.session_date
+    ? "rescheduled"
+    : "time_changed";
+  await createClassSessionChange(db, {
+    organizationId: session.organization_id,
+    studyRoomId: session.study_room_id,
+    classSessionId,
+    changeType,
+    reason,
+    teacherId: activeTeacher.id,
+    beforeValue,
+    afterValue: {
+      sessionDate,
+      startsAt,
+      endsAt,
+      status,
+      reason,
+    },
+  });
+
+  await createClassChangeAuditLog(db, {
+    organizationId: session.organization_id,
+    studyRoomId: session.study_room_id,
+    actorTeacherId: activeTeacher.id,
+    classId: session.class_id,
+    classSessionId,
+    action: "status_changed",
+    title: "수업 회차 수정",
+    summary: `${classRoom.name} ${sessionDate} 수업 회차를 수정했습니다.`,
+  });
+
+  return {
+    ok: true,
+    session: formatClassSession(updatedSession, classRoom),
+  };
+}
+
 async function listTodayAttendance(
   { db, teacher }: AppContext,
 ): Promise<Record<string, unknown>> {
@@ -3598,6 +3703,23 @@ async function readClassSession(db: SupabaseClient, classSessionId: string) {
   const { data, error } = await db
     .from("class_sessions")
     .select("id, organization_id, study_room_id, class_id, status")
+    .eq("id", classSessionId)
+    .maybeSingle();
+
+  if (error) throw new EdgeApiError(500, "수업 회차 조회에 실패했습니다.");
+  if (!data) throw new EdgeApiError(404, "수업 회차를 찾을 수 없습니다.");
+  return data;
+}
+
+async function readClassSessionDetail(
+  db: SupabaseClient,
+  classSessionId: string,
+) {
+  const { data, error } = await db
+    .from("class_sessions")
+    .select(
+      "id, organization_id, study_room_id, class_id, session_date, starts_at, ends_at, status, change_reason",
+    )
     .eq("id", classSessionId)
     .maybeSingle();
 
@@ -5530,6 +5652,12 @@ function formatScheduleText(
 function trimSeconds(value: unknown) {
   const text = stringValue(value);
   return text.length >= 5 ? text.slice(0, 5) : text;
+}
+
+function timeOfDayFromTimestamp(value: unknown) {
+  const text = stringValue(value);
+  const match = text.match(/T(\d{2}:\d{2})/);
+  return match?.[1] ?? trimSeconds(value);
 }
 
 function normalizeStringRecord(value: unknown) {
