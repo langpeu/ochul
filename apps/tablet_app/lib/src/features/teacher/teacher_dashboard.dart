@@ -4562,7 +4562,7 @@ class _StudentGuardiansDialogState extends State<_StudentGuardiansDialog> {
                 const Align(
                   alignment: Alignment.centerLeft,
                   child: Text(
-                    '카카오 수신 동의는 고지 후 확인한 경우에만 켜 주세요. 수신 거부는 동의를 끄고, 정보 삭제 요청은 별도 표시해 저장합니다.',
+                    '보호자 연락처는 출결 알림, 휴강/보강/시간 변경 안내, 수업료 납부 및 미납 안내 목적으로만 사용합니다. 고지 후 동의를 확인한 경우에만 카카오 수신 동의를 켜 주세요.',
                   ),
                 ),
                 const SizedBox(height: 8),
