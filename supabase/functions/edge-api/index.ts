@@ -85,6 +85,30 @@ async function routeEdgeRequest(
     return await onboardTeacher(body, context);
   }
 
+  if (method === "GET" && path === "/admin/teachers") {
+    return await listAdminTeachers(context);
+  }
+
+  const adminTeacherStudyRoomsMatch = path.match(
+    /^\/admin\/teachers\/([^/]+)\/study-rooms$/,
+  );
+  if (method === "GET" && adminTeacherStudyRoomsMatch) {
+    return await listAdminTeacherStudyRooms(
+      adminTeacherStudyRoomsMatch[1],
+      context,
+    );
+  }
+
+  const adminStudyRoomStudentsMatch = path.match(
+    /^\/admin\/study-rooms\/([^/]+)\/students$/,
+  );
+  if (method === "GET" && adminStudyRoomStudentsMatch) {
+    return await listAdminStudyRoomStudents(
+      adminStudyRoomStudentsMatch[1],
+      context,
+    );
+  }
+
   const studyRoomStudentsMatch = path.match(
     /^\/study-rooms\/([^/]+)\/students$/,
   );
@@ -299,6 +323,64 @@ async function onboardTeacher(
       description: studyRoom.description,
     }],
   };
+}
+
+async function listAdminTeachers(
+  { db, teacher }: AppContext,
+): Promise<Record<string, unknown>> {
+  requireAdminTeacher(teacher);
+
+  const { data: teachers, error } = await db
+    .from("teachers")
+    .select("id, name, email, role, created_at")
+    .order("created_at", { ascending: false });
+
+  if (error) throw new EdgeApiError(500, "선생님 목록 조회에 실패했습니다.");
+
+  return {
+    ok: true,
+    teachers: (teachers ?? []).map((item) => ({
+      id: item.id,
+      name: item.name,
+      email: item.email,
+      role: item.role,
+      createdAt: item.created_at,
+    })),
+  };
+}
+
+async function listAdminTeacherStudyRooms(
+  teacherId: string,
+  { db, teacher }: AppContext,
+): Promise<Record<string, unknown>> {
+  requireAdminTeacher(teacher);
+  assertUuid(teacherId, "선생님 정보가 올바르지 않습니다.");
+
+  const { data: studyRooms, error } = await db
+    .from("study_rooms")
+    .select("id, name, description, created_at")
+    .eq("owner_teacher_id", teacherId)
+    .order("created_at", { ascending: true });
+
+  if (error) throw new EdgeApiError(500, "공부방 목록 조회에 실패했습니다.");
+
+  return {
+    ok: true,
+    studyRooms: (studyRooms ?? []).map((studyRoom) => ({
+      id: studyRoom.id,
+      name: studyRoom.name,
+      description: studyRoom.description,
+      createdAt: studyRoom.created_at,
+    })),
+  };
+}
+
+async function listAdminStudyRoomStudents(
+  studyRoomId: string,
+  context: AppContext,
+): Promise<Record<string, unknown>> {
+  requireAdminTeacher(context.teacher);
+  return await listStudents(studyRoomId, context);
 }
 
 async function listClasses(
@@ -1853,6 +1935,14 @@ function switchNotificationStatus(status: unknown) {
 function requireTeacherProfile(teacher: TeacherContext | null) {
   if (!teacher) throw new EdgeApiError(403, "선생님 프로필이 필요합니다.");
   return teacher;
+}
+
+function requireAdminTeacher(teacher: TeacherContext | null) {
+  const activeTeacher = requireTeacherProfile(teacher);
+  if (activeTeacher.role !== "admin") {
+    throw new EdgeApiError(403, "관리자 권한이 필요합니다.");
+  }
+  return activeTeacher;
 }
 
 function maskPhone(phone: string) {

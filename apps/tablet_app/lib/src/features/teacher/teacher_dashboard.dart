@@ -4,6 +4,7 @@ import '../../core/app_config.dart';
 import '../../core/edge_function_client.dart';
 import '../../core/teacher_gate.dart';
 import '../../models/sample_data.dart';
+import 'admin_management_service.dart';
 import 'audit_log_service.dart';
 import 'class_management_service.dart';
 import 'enrollment_management_service.dart';
@@ -35,6 +36,9 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
     edgeClient: EdgeFunctionClient(),
   );
   final _auditLogService = const AuditLogService(
+    edgeClient: EdgeFunctionClient(),
+  );
+  final _adminService = const AdminManagementService(
     edgeClient: EdgeFunctionClient(),
   );
 
@@ -80,6 +84,7 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
               classService: _classService,
               enrollmentService: _enrollmentService,
               auditLogService: _auditLogService,
+              adminService: _adminService,
             ),
           ),
         ],
@@ -96,6 +101,7 @@ class _TeacherBoardContent extends StatelessWidget {
     required this.classService,
     required this.enrollmentService,
     required this.auditLogService,
+    required this.adminService,
   });
 
   final AppConfig config;
@@ -104,6 +110,7 @@ class _TeacherBoardContent extends StatelessWidget {
   final ClassManagementService classService;
   final EnrollmentManagementService enrollmentService;
   final AuditLogService auditLogService;
+  final AdminManagementService adminService;
 
   @override
   Widget build(BuildContext context) {
@@ -130,6 +137,9 @@ class _TeacherBoardContent extends StatelessWidget {
           return _TeacherHomeError(message: snapshot.error.toString());
         }
         final home = snapshot.requireData;
+        if (home.teacher?.role == 'admin') {
+          return _AdminDashboardPanel(service: adminService);
+        }
         final studyRoom = home.studyRooms.isEmpty
             ? null
             : home.studyRooms.first;
@@ -1122,6 +1132,260 @@ class _EnrollmentData {
   final List<ManagedClass> classes;
   final List<ManagedStudent> students;
   final List<ManagedStudent> enrolled;
+}
+
+class _AdminDashboardPanel extends StatefulWidget {
+  const _AdminDashboardPanel({required this.service});
+
+  final AdminManagementService service;
+
+  @override
+  State<_AdminDashboardPanel> createState() => _AdminDashboardPanelState();
+}
+
+class _AdminDashboardPanelState extends State<_AdminDashboardPanel> {
+  late Future<_AdminDashboardData> _dataFuture;
+  String? _selectedTeacherId;
+  String? _selectedStudyRoomId;
+
+  @override
+  void initState() {
+    super.initState();
+    _dataFuture = _loadData();
+  }
+
+  Future<_AdminDashboardData> _loadData() async {
+    final teachers = await widget.service.fetchTeachers();
+    final teacherId = _selectedTeacherId ?? teachers.firstOrNull?.id;
+    final studyRooms = teacherId == null
+        ? const <StudyRoomSummary>[]
+        : await widget.service.fetchTeacherStudyRooms(teacherId);
+    final studyRoomId = _selectedStudyRoomId ?? studyRooms.firstOrNull?.id;
+    final selectedStudyRoomBelongs = studyRooms.any(
+      (studyRoom) => studyRoom.id == studyRoomId,
+    );
+    final effectiveStudyRoomId = selectedStudyRoomBelongs
+        ? studyRoomId
+        : studyRooms.firstOrNull?.id;
+    final students = effectiveStudyRoomId == null
+        ? const <ManagedStudent>[]
+        : await widget.service.fetchStudyRoomStudents(effectiveStudyRoomId);
+
+    _selectedTeacherId = teacherId;
+    _selectedStudyRoomId = effectiveStudyRoomId;
+    return _AdminDashboardData(
+      teachers: teachers,
+      studyRooms: studyRooms,
+      students: students,
+    );
+  }
+
+  void _selectTeacher(String teacherId) {
+    setState(() {
+      _selectedTeacherId = teacherId;
+      _selectedStudyRoomId = null;
+      _dataFuture = _loadData();
+    });
+  }
+
+  void _selectStudyRoom(String studyRoomId) {
+    setState(() {
+      _selectedStudyRoomId = studyRoomId;
+      _dataFuture = _loadData();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<_AdminDashboardData>(
+      future: _dataFuture,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState != ConnectionState.done) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        if (snapshot.hasError) {
+          return _TeacherHomeError(message: snapshot.error.toString());
+        }
+        final data = snapshot.requireData;
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: _AdminTeacherListPanel(
+                teachers: data.teachers,
+                selectedTeacherId: _selectedTeacherId,
+                onSelected: _selectTeacher,
+              ),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: _AdminStudyRoomListPanel(
+                studyRooms: data.studyRooms,
+                selectedStudyRoomId: _selectedStudyRoomId,
+                onSelected: _selectStudyRoom,
+              ),
+            ),
+            const SizedBox(width: 16),
+            Expanded(child: _AdminStudentListPanel(students: data.students)),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _AdminDashboardData {
+  const _AdminDashboardData({
+    required this.teachers,
+    required this.studyRooms,
+    required this.students,
+  });
+
+  final List<AdminTeacherSummary> teachers;
+  final List<StudyRoomSummary> studyRooms;
+  final List<ManagedStudent> students;
+}
+
+class _AdminTeacherListPanel extends StatelessWidget {
+  const _AdminTeacherListPanel({
+    required this.teachers,
+    required this.selectedTeacherId,
+    required this.onSelected,
+  });
+
+  final List<AdminTeacherSummary> teachers;
+  final String? selectedTeacherId;
+  final ValueChanged<String> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('선생님 목록', style: Theme.of(context).textTheme.titleLarge),
+            const SizedBox(height: 12),
+            Expanded(
+              child: teachers.isEmpty
+                  ? const Center(child: Text('등록된 선생님이 없습니다.'))
+                  : ListView.builder(
+                      itemCount: teachers.length,
+                      itemBuilder: (context, index) {
+                        final teacher = teachers[index];
+                        return ListTile(
+                          selected: teacher.id == selectedTeacherId,
+                          contentPadding: EdgeInsets.zero,
+                          leading: Icon(
+                            teacher.role == 'admin'
+                                ? Icons.admin_panel_settings_outlined
+                                : Icons.account_circle_outlined,
+                          ),
+                          title: Text(teacher.name),
+                          subtitle: Text(
+                            [
+                              teacher.email ?? '이메일 없음',
+                              teacher.role == 'admin' ? '관리자' : '선생님',
+                              _formatAuditTime(teacher.createdAt),
+                            ].join(' · '),
+                          ),
+                          onTap: () => onSelected(teacher.id),
+                        );
+                      },
+                    ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _AdminStudyRoomListPanel extends StatelessWidget {
+  const _AdminStudyRoomListPanel({
+    required this.studyRooms,
+    required this.selectedStudyRoomId,
+    required this.onSelected,
+  });
+
+  final List<StudyRoomSummary> studyRooms;
+  final String? selectedStudyRoomId;
+  final ValueChanged<String> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('공부방 목록', style: Theme.of(context).textTheme.titleLarge),
+            const SizedBox(height: 12),
+            Expanded(
+              child: studyRooms.isEmpty
+                  ? const Center(child: Text('선택한 선생님의 공부방이 없습니다.'))
+                  : ListView.builder(
+                      itemCount: studyRooms.length,
+                      itemBuilder: (context, index) {
+                        final studyRoom = studyRooms[index];
+                        return ListTile(
+                          selected: studyRoom.id == selectedStudyRoomId,
+                          contentPadding: EdgeInsets.zero,
+                          leading: const Icon(Icons.meeting_room_outlined),
+                          title: Text(studyRoom.name),
+                          subtitle: Text(studyRoom.description ?? '설명 없음'),
+                          onTap: () => onSelected(studyRoom.id),
+                        );
+                      },
+                    ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _AdminStudentListPanel extends StatelessWidget {
+  const _AdminStudentListPanel({required this.students});
+
+  final List<ManagedStudent> students;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('학생 목록', style: Theme.of(context).textTheme.titleLarge),
+            const SizedBox(height: 12),
+            Expanded(
+              child: students.isEmpty
+                  ? const Center(child: Text('선택한 공부방에 학생이 없습니다.'))
+                  : ListView.builder(
+                      itemCount: students.length,
+                      itemBuilder: (context, index) {
+                        final student = students[index];
+                        return ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          leading: const Icon(Icons.person_outline),
+                          title: Text(student.name),
+                          subtitle: Text(
+                            '${student.code} · ${_studentStatusLabel(student.status)}',
+                          ),
+                        );
+                      },
+                    ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 class _StudentManagementPanel extends StatefulWidget {
