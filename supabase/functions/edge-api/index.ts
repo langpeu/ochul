@@ -3635,13 +3635,25 @@ async function checkInStudent(
     };
   }
 
-  const attendance = await createAttendanceRecord(db, {
+  const attendanceResult = await createAttendanceRecord(db, {
     organizationId: session.organization_id,
     studyRoomId: session.study_room_id,
     classSessionId,
     studentId,
     teacherId: teacher.id,
   });
+  if (attendanceResult.alreadyExists) {
+    return {
+      ok: true,
+      alreadyCheckedIn: true,
+      attendance: {
+        id: attendanceResult.attendance.id,
+        status: attendanceResult.attendance.status,
+        checkedInAt: attendanceResult.attendance.checked_in_at,
+      },
+    };
+  }
+  const attendance = attendanceResult.attendance;
 
   const classInfo = await readClassInfo(db, session.class_id);
   const notifications = await createAttendanceNotificationLogs(db, {
@@ -3742,7 +3754,7 @@ async function seatCheckInStudent(
     seatId,
   });
 
-  const attendance = await createAttendanceRecord(db, {
+  const attendanceResult = await createAttendanceRecord(db, {
     organizationId: session.organization_id,
     studyRoomId: session.study_room_id,
     classSessionId,
@@ -3751,6 +3763,18 @@ async function seatCheckInStudent(
     classroomSeatId: seatId,
     checkedInMethod: "seat_pin",
   });
+  if (attendanceResult.alreadyExists) {
+    return {
+      ok: true,
+      alreadyCheckedIn: true,
+      attendance: {
+        id: attendanceResult.attendance.id,
+        status: attendanceResult.attendance.status,
+        checkedInAt: attendanceResult.attendance.checked_in_at,
+      },
+    };
+  }
+  const attendance = attendanceResult.attendance;
 
   const classInfo = await readClassInfo(db, session.class_id);
   const notifications = await createAttendanceNotificationLogs(db, {
@@ -4511,8 +4535,19 @@ async function createAttendanceRecord(
     .select("id, status, checked_in_at")
     .single();
 
-  if (error) throw new EdgeApiError(500, "출석 기록 생성에 실패했습니다.");
-  return data;
+  if (error) {
+    if (error.code === "23505") {
+      const existing = await readExistingAttendance(
+        db,
+        input.classSessionId,
+        input.studentId,
+      );
+      if (existing) return { attendance: existing, alreadyExists: true };
+      throw new EdgeApiError(409, "이미 점유된 좌석입니다.");
+    }
+    throw new EdgeApiError(500, "출석 기록 생성에 실패했습니다.");
+  }
+  return { attendance: data, alreadyExists: false };
 }
 
 async function readClassInfo(db: SupabaseClient, classId: string) {
