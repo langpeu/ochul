@@ -8,6 +8,7 @@ import 'admin_management_service.dart';
 import 'audit_log_service.dart';
 import 'class_management_service.dart';
 import 'enrollment_management_service.dart';
+import 'notification_log_service.dart';
 import 'payment_management_service.dart';
 import 'student_management_service.dart';
 import 'teacher_home_service.dart';
@@ -43,6 +44,9 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
     edgeClient: EdgeFunctionClient(),
   );
   final _paymentService = const PaymentManagementService(
+    edgeClient: EdgeFunctionClient(),
+  );
+  final _notificationLogService = const NotificationLogService(
     edgeClient: EdgeFunctionClient(),
   );
 
@@ -90,6 +94,7 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
               auditLogService: _auditLogService,
               adminService: _adminService,
               paymentService: _paymentService,
+              notificationLogService: _notificationLogService,
             ),
           ),
         ],
@@ -108,6 +113,7 @@ class _TeacherBoardContent extends StatelessWidget {
     required this.auditLogService,
     required this.adminService,
     required this.paymentService,
+    required this.notificationLogService,
   });
 
   final AppConfig config;
@@ -118,6 +124,7 @@ class _TeacherBoardContent extends StatelessWidget {
   final AuditLogService auditLogService;
   final AdminManagementService adminService;
   final PaymentManagementService paymentService;
+  final NotificationLogService notificationLogService;
 
   @override
   Widget build(BuildContext context) {
@@ -197,7 +204,8 @@ class _TeacherBoardContent extends StatelessWidget {
                         Expanded(
                           child: _AuditHistoryPanel(
                             studyRoom: studyRoom,
-                            service: auditLogService,
+                            auditLogService: auditLogService,
+                            notificationLogService: notificationLogService,
                           ),
                         ),
                       ],
@@ -2885,17 +2893,71 @@ class _SampleAuditPanel extends StatelessWidget {
   }
 }
 
-class _AuditHistoryPanel extends StatefulWidget {
-  const _AuditHistoryPanel({required this.studyRoom, required this.service});
+class _AuditHistoryPanel extends StatelessWidget {
+  const _AuditHistoryPanel({
+    required this.studyRoom,
+    required this.auditLogService,
+    required this.notificationLogService,
+  });
+
+  final StudyRoomSummary studyRoom;
+  final AuditLogService auditLogService;
+  final NotificationLogService notificationLogService;
+
+  @override
+  Widget build(BuildContext context) {
+    return DefaultTabController(
+      length: 2,
+      child: Card(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('기록', style: Theme.of(context).textTheme.titleLarge),
+              const SizedBox(height: 4),
+              Text(studyRoom.name),
+              const SizedBox(height: 8),
+              const TabBar(
+                tabs: [
+                  Tab(text: '히스토리'),
+                  Tab(text: '카카오'),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Expanded(
+                child: TabBarView(
+                  children: [
+                    _AuditLogTab(
+                      studyRoom: studyRoom,
+                      service: auditLogService,
+                    ),
+                    _NotificationLogTab(
+                      studyRoom: studyRoom,
+                      service: notificationLogService,
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _AuditLogTab extends StatefulWidget {
+  const _AuditLogTab({required this.studyRoom, required this.service});
 
   final StudyRoomSummary studyRoom;
   final AuditLogService service;
 
   @override
-  State<_AuditHistoryPanel> createState() => _AuditHistoryPanelState();
+  State<_AuditLogTab> createState() => _AuditLogTabState();
 }
 
-class _AuditHistoryPanelState extends State<_AuditHistoryPanel> {
+class _AuditLogTabState extends State<_AuditLogTab> {
   var _category = AuditLogCategory.all;
   late Future<List<AppAuditLog>> _logsFuture;
 
@@ -2921,69 +2983,197 @@ class _AuditHistoryPanelState extends State<_AuditHistoryPanel> {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Wrap(
+          spacing: 8,
           children: [
-            Text('사용 히스토리', style: Theme.of(context).textTheme.titleLarge),
-            const SizedBox(height: 4),
-            Text(widget.studyRoom.name),
-            const SizedBox(height: 12),
-            Wrap(
-              spacing: 8,
-              children: [
-                for (final category in AuditLogCategory.values)
-                  FilterChip(
-                    label: Text(category.label),
-                    selected: _category == category,
-                    onSelected: (_) => _setCategory(category),
-                  ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            Expanded(
-              child: FutureBuilder<List<AppAuditLog>>(
-                future: _logsFuture,
-                builder: (context, snapshot) {
-                  if (snapshot.connectionState != ConnectionState.done) {
-                    return const Center(child: CircularProgressIndicator());
-                  }
-                  if (snapshot.hasError) {
-                    return Text('히스토리를 불러오지 못했습니다. ${snapshot.error}');
-                  }
-                  final logs = snapshot.data ?? const <AppAuditLog>[];
-                  if (logs.isEmpty) {
-                    return const Center(child: Text('표시할 히스토리가 없습니다.'));
-                  }
-                  return ListView.builder(
-                    itemCount: logs.length,
-                    itemBuilder: (context, index) {
-                      final log = logs[index];
-                      return ListTile(
-                        dense: true,
-                        contentPadding: EdgeInsets.zero,
-                        leading: Icon(_auditIcon(log.category)),
-                        title: Text(log.title),
-                        subtitle: Text(
-                          [
-                            _auditCategoryLabel(log.category),
-                            log.actor,
-                            _formatAuditTime(log.createdAt),
-                            if (log.summary != null && log.summary!.isNotEmpty)
-                              log.summary!,
-                          ].join(' · '),
-                        ),
-                      );
-                    },
-                  );
-                },
+            for (final category in AuditLogCategory.values)
+              FilterChip(
+                label: Text(category.label),
+                selected: _category == category,
+                onSelected: (_) => _setCategory(category),
               ),
-            ),
           ],
         ),
-      ),
+        const SizedBox(height: 8),
+        Expanded(
+          child: FutureBuilder<List<AppAuditLog>>(
+            future: _logsFuture,
+            builder: (context, snapshot) {
+              if (snapshot.connectionState != ConnectionState.done) {
+                return const Center(child: CircularProgressIndicator());
+              }
+              if (snapshot.hasError) {
+                return Text('히스토리를 불러오지 못했습니다. ${snapshot.error}');
+              }
+              final logs = snapshot.data ?? const <AppAuditLog>[];
+              if (logs.isEmpty) {
+                return const Center(child: Text('표시할 히스토리가 없습니다.'));
+              }
+              return ListView.builder(
+                itemCount: logs.length,
+                itemBuilder: (context, index) {
+                  final log = logs[index];
+                  return ListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    leading: Icon(_auditIcon(log.category)),
+                    title: Text(log.title),
+                    subtitle: Text(
+                      [
+                        _auditCategoryLabel(log.category),
+                        log.actor,
+                        _formatAuditTime(log.createdAt),
+                        if (log.summary != null && log.summary!.isNotEmpty)
+                          log.summary!,
+                      ].join(' · '),
+                    ),
+                  );
+                },
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _NotificationLogTab extends StatefulWidget {
+  const _NotificationLogTab({required this.studyRoom, required this.service});
+
+  final StudyRoomSummary studyRoom;
+  final NotificationLogService service;
+
+  @override
+  State<_NotificationLogTab> createState() => _NotificationLogTabState();
+}
+
+class _NotificationLogTabState extends State<_NotificationLogTab> {
+  var _status = 'all';
+  late Future<List<KakaoNotificationLog>> _logsFuture;
+  String? _resendingId;
+
+  @override
+  void initState() {
+    super.initState();
+    _logsFuture = _fetchLogs();
+  }
+
+  Future<List<KakaoNotificationLog>> _fetchLogs() {
+    return widget.service.fetchLogs(
+      studyRoomId: widget.studyRoom.id,
+      status: _status,
+    );
+  }
+
+  void _setStatus(String status) {
+    setState(() {
+      _status = status;
+      _logsFuture = _fetchLogs();
+    });
+  }
+
+  Future<void> _resend(KakaoNotificationLog log) async {
+    setState(() => _resendingId = log.id);
+    try {
+      await widget.service.resend(log.id);
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('카카오 재발송을 요청했습니다.')));
+        setState(() => _logsFuture = _fetchLogs());
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('카카오 재발송 요청에 실패했습니다.')));
+      }
+    } finally {
+      if (mounted) setState(() => _resendingId = null);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    const statuses = [
+      ('all', '전체'),
+      ('pending', '대기'),
+      ('sent', '성공'),
+      ('failed', '실패'),
+    ];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Wrap(
+          spacing: 8,
+          children: [
+            for (final item in statuses)
+              FilterChip(
+                label: Text(item.$2),
+                selected: _status == item.$1,
+                onSelected: (_) => _setStatus(item.$1),
+              ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Expanded(
+          child: FutureBuilder<List<KakaoNotificationLog>>(
+            future: _logsFuture,
+            builder: (context, snapshot) {
+              if (snapshot.connectionState != ConnectionState.done) {
+                return const Center(child: CircularProgressIndicator());
+              }
+              if (snapshot.hasError) {
+                return Text('카카오 이력을 불러오지 못했습니다. ${snapshot.error}');
+              }
+              final logs = snapshot.data ?? const <KakaoNotificationLog>[];
+              if (logs.isEmpty) {
+                return const Center(child: Text('표시할 카카오 이력이 없습니다.'));
+              }
+              return ListView.builder(
+                itemCount: logs.length,
+                itemBuilder: (context, index) {
+                  final log = logs[index];
+                  final resending = _resendingId == log.id;
+                  return ListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    leading: Icon(_notificationStatusIcon(log.status)),
+                    title: Text('${log.studentName} · ${log.className}'),
+                    subtitle: Text(
+                      [
+                        _notificationEventLabel(log.eventType),
+                        _notificationStatusLabel(log.status),
+                        log.recipientPhoneMasked,
+                        _formatAuditTime(log.sentAt ?? log.createdAt),
+                        if (log.retryCount > 0) '재시도 ${log.retryCount}회',
+                        if (log.errorMessage != null &&
+                            log.errorMessage!.isNotEmpty)
+                          log.errorMessage!,
+                      ].join(' · '),
+                    ),
+                    trailing: resending
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : IconButton(
+                            tooltip: '재발송 요청',
+                            icon: const Icon(Icons.refresh),
+                            onPressed: () => _resend(log),
+                          ),
+                  );
+                },
+              );
+            },
+          ),
+        ),
+      ],
     );
   }
 }
@@ -3024,6 +3214,34 @@ IconData _paymentStatusIcon(String status) {
     'partial' => Icons.timelapse_outlined,
     'exempt' => Icons.remove_circle_outline,
     _ => Icons.pending_outlined,
+  };
+}
+
+String _notificationStatusLabel(String status) {
+  return switch (status) {
+    'sent' => '성공',
+    'failed' => '실패',
+    'cancelled' => '취소',
+    _ => '대기',
+  };
+}
+
+IconData _notificationStatusIcon(String status) {
+  return switch (status) {
+    'sent' => Icons.check_circle_outline,
+    'failed' => Icons.error_outline,
+    'cancelled' => Icons.cancel_outlined,
+    _ => Icons.schedule_outlined,
+  };
+}
+
+String _notificationEventLabel(String eventType) {
+  return switch (eventType) {
+    'attendance_checked_in' => '출석',
+    'class_cancelled' => '휴강',
+    'class_makeup_added' => '보강',
+    'payment_due_reminder' => '납부',
+    _ => '알림',
   };
 }
 

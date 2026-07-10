@@ -112,9 +112,8 @@ Edge API 경로는 REST 스타일로 간결하고 명확하게 둔다.
 
 ### notifications
 
-- `GET /study-rooms/{studyRoomId}/notifications`: 카카오 발송 이력
-- `POST /notifications`: 카카오 발송 요청
-- `POST /notifications/{notificationId}/resend`: 실패 건 재발송
+- `GET /study-rooms/{studyRoomId}/notifications`: 카카오 발송 이력, 상태/학생 필터 지원
+- `POST /notifications/{notificationId}/resend`: 기존 발송 로그를 복제해 pending 재발송 요청 생성
 
 ### audit-logs
 

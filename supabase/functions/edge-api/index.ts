@@ -169,6 +169,24 @@ async function routeEdgeRequest(
     return await listAuditLogs(studyRoomAuditLogsMatch[1], body, context);
   }
 
+  const studyRoomNotificationsMatch = path.match(
+    /^\/study-rooms\/([^/]+)\/notifications$/,
+  );
+  if (method === "GET" && studyRoomNotificationsMatch) {
+    return await listNotifications(
+      studyRoomNotificationsMatch[1],
+      body,
+      context,
+    );
+  }
+
+  const resendNotificationMatch = path.match(
+    /^\/notifications\/([^/]+)\/resend$/,
+  );
+  if (method === "POST" && resendNotificationMatch) {
+    return await resendNotification(resendNotificationMatch[1], context);
+  }
+
   const paymentPeriodsMatch = path.match(
     /^\/study-rooms\/([^/]+)\/payment-periods$/,
   );
@@ -1154,6 +1172,120 @@ async function listAuditLogs(
   return {
     ok: true,
     logs: records.slice(0, limit),
+  };
+}
+
+async function listNotifications(
+  studyRoomId: string,
+  body: Record<string, unknown>,
+  { db, teacher }: AppContext,
+): Promise<Record<string, unknown>> {
+  const activeTeacher = requireTeacherProfile(teacher);
+  assertUuid(studyRoomId, "공부방 정보가 올바르지 않습니다.");
+  await assertStudyRoomAccess(db, activeTeacher, studyRoomId, {
+    allowAdmin: true,
+  });
+
+  const status = normalizeNotificationStatusFilter(body.status);
+  const studentId = nullableString(body.studentId);
+  const limit = normalizeLimit(body.limit, 80, 150);
+  if (studentId) assertUuid(studentId, "학생 정보가 올바르지 않습니다.");
+
+  let query = db
+    .from("notification_logs")
+    .select(
+      "id, event_type, channel, recipient_phone_masked, student_id, student_name, class_name, status, error_message, retry_count, retry_of_notification_id, created_at, sent_at",
+    )
+    .eq("study_room_id", studyRoomId)
+    .eq("channel", "kakao")
+    .order("created_at", { ascending: false })
+    .limit(limit);
+
+  if (status !== "all") query = query.eq("status", status);
+  if (studentId) query = query.eq("student_id", studentId);
+
+  const { data: notifications, error } = await query;
+  if (error) {
+    throw new EdgeApiError(500, "카카오 발송 이력 조회에 실패했습니다.");
+  }
+
+  return {
+    ok: true,
+    notifications: (notifications ?? []).map(formatNotificationLog),
+  };
+}
+
+async function resendNotification(
+  notificationId: string,
+  { db, teacher }: AppContext,
+): Promise<Record<string, unknown>> {
+  const activeTeacher = requireTeacherProfile(teacher);
+  assertUuid(notificationId, "알림 정보가 올바르지 않습니다.");
+
+  const { data: current, error: currentError } = await db
+    .from("notification_logs")
+    .select(
+      "id, organization_id, study_room_id, student_id, guardian_id, class_id, class_session_id, attendance_record_id, event_type, channel, recipient_phone_masked, student_name, class_name, event_time, payload, retry_count",
+    )
+    .eq("id", notificationId)
+    .maybeSingle();
+
+  if (currentError) {
+    throw new EdgeApiError(500, "카카오 발송 이력 조회에 실패했습니다.");
+  }
+  if (!current) {
+    throw new EdgeApiError(404, "카카오 발송 이력을 찾을 수 없습니다.");
+  }
+  await assertStudyRoomAccess(db, activeTeacher, current.study_room_id, {
+    allowAdmin: false,
+  });
+
+  const { data: retry, error: retryError } = await db
+    .from("notification_logs")
+    .insert({
+      organization_id: current.organization_id,
+      study_room_id: current.study_room_id,
+      student_id: current.student_id,
+      guardian_id: current.guardian_id,
+      class_id: current.class_id,
+      class_session_id: current.class_session_id,
+      attendance_record_id: current.attendance_record_id,
+      event_type: current.event_type,
+      channel: current.channel,
+      recipient_phone_masked: current.recipient_phone_masked,
+      student_name: current.student_name,
+      class_name: current.class_name,
+      event_time: new Date().toISOString(),
+      payload: current.payload,
+      retry_of_notification_id: current.id,
+      retry_count: Number(current.retry_count ?? 0) + 1,
+      status: "pending",
+    })
+    .select(
+      "id, event_type, channel, recipient_phone_masked, student_id, student_name, class_name, status, error_message, retry_count, retry_of_notification_id, created_at, sent_at",
+    )
+    .single();
+
+  if (retryError) {
+    throw new EdgeApiError(500, "카카오 재발송 요청 생성에 실패했습니다.");
+  }
+
+  await createNotificationAuditLog(db, {
+    organizationId: current.organization_id,
+    studyRoomId: current.study_room_id,
+    actorTeacherId: activeTeacher.id,
+    studentId: current.student_id,
+    notificationLogId: retry.id,
+    action: "message_resent",
+    title: "카카오 재발송 요청",
+    summary: `${current.student_name ?? "학생"} ${
+      current.class_name ?? ""
+    } 알림 재발송을 요청했습니다.`,
+  });
+
+  return {
+    ok: true,
+    notification: formatNotificationLog(retry),
   };
 }
 
@@ -2534,6 +2666,39 @@ async function createGuardianAuditLog(
   if (error) throw new EdgeApiError(500, "사용 히스토리 기록에 실패했습니다.");
 }
 
+async function createNotificationAuditLog(
+  db: SupabaseClient,
+  input: {
+    organizationId: string;
+    studyRoomId: string;
+    actorTeacherId: string;
+    studentId: string | null;
+    notificationLogId: string;
+    action:
+      | "message_requested"
+      | "message_sent"
+      | "message_failed"
+      | "message_resent";
+    title: string;
+    summary: string;
+  },
+) {
+  const { error } = await db.from("audit_logs").insert({
+    organization_id: input.organizationId,
+    study_room_id: input.studyRoomId,
+    actor_teacher_id: input.actorTeacherId,
+    student_id: input.studentId,
+    notification_log_id: input.notificationLogId,
+    entity_type: "notification",
+    entity_id: input.notificationLogId,
+    action: input.action,
+    title: input.title,
+    summary: input.summary,
+  });
+
+  if (error) throw new EdgeApiError(500, "사용 히스토리 기록에 실패했습니다.");
+}
+
 async function createClassAuditLog(
   db: SupabaseClient,
   input: {
@@ -2767,6 +2932,14 @@ function normalizeAuditCategory(value: unknown) {
   return category;
 }
 
+function normalizeNotificationStatusFilter(value: unknown) {
+  const status = stringValue(value) || "all";
+  if (!["all", "pending", "sent", "failed", "cancelled"].includes(status)) {
+    throw new EdgeApiError(400, "알림 상태 필터가 올바르지 않습니다.");
+  }
+  return status;
+}
+
 function normalizeLimit(value: unknown, fallback: number, maximum: number) {
   const limit = Number(value ?? fallback);
   if (!Number.isInteger(limit) || limit < 1) return fallback;
@@ -2891,6 +3064,24 @@ function formatStudentGuardian(row: Record<string, unknown>) {
     relationship: row.relationship,
     kakaoOptIn: guardian.kakao_opt_in === true && guardian.opt_out_at === null,
     primaryContact: row.primary_contact,
+  };
+}
+
+function formatNotificationLog(row: Record<string, unknown>) {
+  return {
+    id: row.id,
+    eventType: row.event_type,
+    channel: row.channel,
+    recipientPhoneMasked: row.recipient_phone_masked,
+    studentId: row.student_id,
+    studentName: row.student_name,
+    className: row.class_name,
+    status: row.status,
+    errorMessage: row.error_message,
+    retryCount: row.retry_count,
+    retryOfNotificationId: row.retry_of_notification_id,
+    createdAt: row.created_at,
+    sentAt: row.sent_at,
   };
 }
 
