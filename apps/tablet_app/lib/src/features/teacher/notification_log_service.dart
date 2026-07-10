@@ -8,10 +8,21 @@ class NotificationLogService {
   Future<List<KakaoNotificationLog>> fetchLogs({
     required String studyRoomId,
     required String status,
+    String? studentId,
+    String? classId,
+    String? dateFrom,
+    String? dateTo,
   }) async {
     final data = await edgeClient.call(
       '/study-rooms/$studyRoomId/notifications',
-      body: <String, dynamic>{'status': status, 'limit': 80},
+      body: <String, dynamic>{
+        'status': status,
+        'limit': 80,
+        if (studentId != null && studentId.isNotEmpty) 'studentId': studentId,
+        if (classId != null && classId.isNotEmpty) 'classId': classId,
+        if (dateFrom != null && dateFrom.isNotEmpty) 'dateFrom': dateFrom,
+        if (dateTo != null && dateTo.isNotEmpty) 'dateTo': dateTo,
+      },
     );
     final notificationsJson = data['notifications'];
     return [

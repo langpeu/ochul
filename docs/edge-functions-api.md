@@ -135,13 +135,14 @@ Edge API 경로는 REST 스타일로 간결하고 명확하게 둔다.
 ### notifications
 
 - `GET /study-rooms/{studyRoomId}/notifications`: 카카오 발송 이력, 상태/학생 필터 지원
+  - Body filter: `status`, `studentId`, `classId`, `dateFrom`, `dateTo`, `limit`
 - `POST /notifications/{notificationId}/resend`: 기존 발송 로그를 복제해 pending 재발송 요청 생성
 - `POST /notifications/process-pending`: 공부방의 pending 카카오 알림을 provider로 발송 처리
 
 ### audit-logs
 
 - `GET /study-rooms/{studyRoomId}/audit-logs`: 사용 히스토리
-- Body filter: `category` (`all`, `student`, `class`, `kakao`), `limit`
+- Body filter: `category` (`all`, `student`, `class`, `kakao`), `studentId`, `classId`, `dateFrom`, `dateTo`, `limit`
 - 응답은 `audit_logs`와 카카오 `notification_logs`를 시간순으로 합쳐 반환한다.
 
 ### admin

@@ -8,10 +8,21 @@ class AuditLogService {
   Future<List<AppAuditLog>> fetchLogs({
     required String studyRoomId,
     required AuditLogCategory category,
+    String? studentId,
+    String? classId,
+    String? dateFrom,
+    String? dateTo,
   }) async {
     final data = await edgeClient.call(
       '/study-rooms/$studyRoomId/audit-logs',
-      body: <String, dynamic>{'category': category.value, 'limit': 60},
+      body: <String, dynamic>{
+        'category': category.value,
+        'limit': 60,
+        if (studentId != null && studentId.isNotEmpty) 'studentId': studentId,
+        if (classId != null && classId.isNotEmpty) 'classId': classId,
+        if (dateFrom != null && dateFrom.isNotEmpty) 'dateFrom': dateFrom,
+        if (dateTo != null && dateTo.isNotEmpty) 'dateTo': dateTo,
+      },
     );
     final logsJson = data['logs'];
     return [

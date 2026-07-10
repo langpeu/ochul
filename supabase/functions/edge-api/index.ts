@@ -2073,6 +2073,14 @@ async function listAuditLogs(
 
   const category = normalizeAuditCategory(body.category);
   const limit = normalizeLimit(body.limit, 60, 100);
+  const studentId = nullableString(body.studentId);
+  const classId = nullableString(body.classId);
+  const dateFrom = nullableString(body.dateFrom);
+  const dateTo = nullableString(body.dateTo);
+  if (studentId) assertUuid(studentId, "학생 정보가 올바르지 않습니다.");
+  if (classId) assertUuid(classId, "수업 정보가 올바르지 않습니다.");
+  if (dateFrom) assertDate(dateFrom, "조회 시작일이 올바르지 않습니다.");
+  if (dateTo) assertDate(dateTo, "조회 종료일이 올바르지 않습니다.");
   const records: Record<string, unknown>[] = [];
 
   if (category !== "kakao") {
@@ -2089,6 +2097,10 @@ async function listAuditLogs(
     if (entityTypes.length > 0) {
       query = query.in("entity_type", entityTypes);
     }
+    if (studentId) query = query.eq("student_id", studentId);
+    if (classId) query = query.eq("class_id", classId);
+    if (dateFrom) query = query.gte("created_at", `${dateFrom}T00:00:00+09:00`);
+    if (dateTo) query = query.lte("created_at", `${dateTo}T23:59:59.999+09:00`);
 
     const { data: auditLogs, error: auditError } = await query;
     if (auditError) {
@@ -2117,7 +2129,7 @@ async function listAuditLogs(
   }
 
   if (category === "all" || category === "kakao") {
-    const { data: notificationLogs, error: notificationError } = await db
+    let notificationQuery = db
       .from("notification_logs")
       .select(
         "id, event_type, status, student_id, class_id, class_session_id, student_name, class_name, recipient_phone_masked, created_at, sent_at",
@@ -2126,6 +2138,25 @@ async function listAuditLogs(
       .eq("channel", "kakao")
       .order("created_at", { ascending: false })
       .limit(limit);
+    if (studentId) {
+      notificationQuery = notificationQuery.eq("student_id", studentId);
+    }
+    if (classId) notificationQuery = notificationQuery.eq("class_id", classId);
+    if (dateFrom) {
+      notificationQuery = notificationQuery.gte(
+        "created_at",
+        `${dateFrom}T00:00:00+09:00`,
+      );
+    }
+    if (dateTo) {
+      notificationQuery = notificationQuery.lte(
+        "created_at",
+        `${dateTo}T23:59:59.999+09:00`,
+      );
+    }
+
+    const { data: notificationLogs, error: notificationError } =
+      await notificationQuery;
 
     if (notificationError) {
       throw new EdgeApiError(500, "카카오 발송 이력 조회에 실패했습니다.");
@@ -2172,8 +2203,14 @@ async function listNotifications(
 
   const status = normalizeNotificationStatusFilter(body.status);
   const studentId = nullableString(body.studentId);
+  const classId = nullableString(body.classId);
+  const dateFrom = nullableString(body.dateFrom);
+  const dateTo = nullableString(body.dateTo);
   const limit = normalizeLimit(body.limit, 80, 150);
   if (studentId) assertUuid(studentId, "학생 정보가 올바르지 않습니다.");
+  if (classId) assertUuid(classId, "수업 정보가 올바르지 않습니다.");
+  if (dateFrom) assertDate(dateFrom, "조회 시작일이 올바르지 않습니다.");
+  if (dateTo) assertDate(dateTo, "조회 종료일이 올바르지 않습니다.");
 
   let query = db
     .from("notification_logs")
@@ -2187,6 +2224,9 @@ async function listNotifications(
 
   if (status !== "all") query = query.eq("status", status);
   if (studentId) query = query.eq("student_id", studentId);
+  if (classId) query = query.eq("class_id", classId);
+  if (dateFrom) query = query.gte("created_at", `${dateFrom}T00:00:00+09:00`);
+  if (dateTo) query = query.lte("created_at", `${dateTo}T23:59:59.999+09:00`);
 
   const { data: notifications, error } = await query;
   if (error) {

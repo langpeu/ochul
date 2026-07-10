@@ -619,6 +619,8 @@ class _TeacherBoardContentState extends State<_TeacherBoardContent> {
                                   child: _AuditHistoryPanel(
                                     key: ValueKey('history-${studyRoom.id}'),
                                     studyRoom: studyRoom,
+                                    studentService: widget.studentService,
+                                    classService: widget.classService,
                                     auditLogService: widget.auditLogService,
                                     notificationLogService:
                                         widget.notificationLogService,
@@ -4886,11 +4888,15 @@ class _AuditHistoryPanel extends StatelessWidget {
   const _AuditHistoryPanel({
     super.key,
     required this.studyRoom,
+    required this.studentService,
+    required this.classService,
     required this.auditLogService,
     required this.notificationLogService,
   });
 
   final StudyRoomSummary studyRoom;
+  final StudentManagementService studentService;
+  final ClassManagementService classService;
   final AuditLogService auditLogService;
   final NotificationLogService notificationLogService;
 
@@ -4920,10 +4926,14 @@ class _AuditHistoryPanel extends StatelessWidget {
                   children: [
                     _AuditLogTab(
                       studyRoom: studyRoom,
+                      studentService: studentService,
+                      classService: classService,
                       service: auditLogService,
                     ),
                     _NotificationLogTab(
                       studyRoom: studyRoom,
+                      studentService: studentService,
+                      classService: classService,
                       service: notificationLogService,
                     ),
                   ],
@@ -4938,9 +4948,16 @@ class _AuditHistoryPanel extends StatelessWidget {
 }
 
 class _AuditLogTab extends StatefulWidget {
-  const _AuditLogTab({required this.studyRoom, required this.service});
+  const _AuditLogTab({
+    required this.studyRoom,
+    required this.studentService,
+    required this.classService,
+    required this.service,
+  });
 
   final StudyRoomSummary studyRoom;
+  final StudentManagementService studentService;
+  final ClassManagementService classService;
   final AuditLogService service;
 
   @override
@@ -4949,24 +4966,53 @@ class _AuditLogTab extends StatefulWidget {
 
 class _AuditLogTabState extends State<_AuditLogTab> {
   var _category = AuditLogCategory.all;
+  String? _studentId;
+  String? _classId;
+  late final TextEditingController _dateFromController;
+  late final TextEditingController _dateToController;
+  late Future<_HistoryFilterData> _filtersFuture;
   late Future<List<AppAuditLog>> _logsFuture;
 
   @override
   void initState() {
     super.initState();
+    _dateFromController = TextEditingController();
+    _dateToController = TextEditingController();
+    _filtersFuture = _loadFilters();
     _logsFuture = _fetchLogs();
+  }
+
+  @override
+  void dispose() {
+    _dateFromController.dispose();
+    _dateToController.dispose();
+    super.dispose();
+  }
+
+  Future<_HistoryFilterData> _loadFilters() async {
+    final results = await Future.wait([
+      widget.studentService.fetchStudents(widget.studyRoom.id),
+      widget.classService.fetchClasses(widget.studyRoom.id),
+    ]);
+    return _HistoryFilterData(
+      students: results[0] as List<ManagedStudent>,
+      classes: results[1] as List<ManagedClass>,
+    );
   }
 
   Future<List<AppAuditLog>> _fetchLogs() {
     return widget.service.fetchLogs(
       studyRoomId: widget.studyRoom.id,
       category: _category,
+      studentId: _studentId,
+      classId: _classId,
+      dateFrom: _dateFromController.text.trim(),
+      dateTo: _dateToController.text.trim(),
     );
   }
 
-  void _setCategory(AuditLogCategory category) {
+  void _refreshLogs() {
     setState(() {
-      _category = category;
       _logsFuture = _fetchLogs();
     });
   }
@@ -4976,16 +5022,39 @@ class _AuditLogTabState extends State<_AuditLogTab> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Wrap(
-          spacing: 8,
-          children: [
-            for (final category in AuditLogCategory.values)
-              FilterChip(
-                label: Text(category.label),
-                selected: _category == category,
-                onSelected: (_) => _setCategory(category),
-              ),
-          ],
+        FutureBuilder<_HistoryFilterData>(
+          future: _filtersFuture,
+          builder: (context, snapshot) {
+            final filters = snapshot.data ?? const _HistoryFilterData();
+            return _HistoryFilterBar(
+              students: filters.students,
+              classes: filters.classes,
+              selectedStudentId: _studentId,
+              selectedClassId: _classId,
+              dateFromController: _dateFromController,
+              dateToController: _dateToController,
+              onStudentChanged: (value) {
+                _studentId = value;
+                _refreshLogs();
+              },
+              onClassChanged: (value) {
+                _classId = value;
+                _refreshLogs();
+              },
+              onDateSubmitted: _refreshLogs,
+              trailing: [
+                for (final category in AuditLogCategory.values)
+                  FilterChip(
+                    label: Text(category.label),
+                    selected: _category == category,
+                    onSelected: (_) {
+                      _category = category;
+                      _refreshLogs();
+                    },
+                  ),
+              ],
+            );
+          },
         ),
         const SizedBox(height: 8),
         Expanded(
@@ -5032,9 +5101,16 @@ class _AuditLogTabState extends State<_AuditLogTab> {
 }
 
 class _NotificationLogTab extends StatefulWidget {
-  const _NotificationLogTab({required this.studyRoom, required this.service});
+  const _NotificationLogTab({
+    required this.studyRoom,
+    required this.studentService,
+    required this.classService,
+    required this.service,
+  });
 
   final StudyRoomSummary studyRoom;
+  final StudentManagementService studentService;
+  final ClassManagementService classService;
   final NotificationLogService service;
 
   @override
@@ -5043,6 +5119,11 @@ class _NotificationLogTab extends StatefulWidget {
 
 class _NotificationLogTabState extends State<_NotificationLogTab> {
   var _status = 'all';
+  String? _studentId;
+  String? _classId;
+  late final TextEditingController _dateFromController;
+  late final TextEditingController _dateToController;
+  late Future<_HistoryFilterData> _filtersFuture;
   late Future<List<KakaoNotificationLog>> _logsFuture;
   String? _resendingId;
   var _processingPending = false;
@@ -5050,19 +5131,43 @@ class _NotificationLogTabState extends State<_NotificationLogTab> {
   @override
   void initState() {
     super.initState();
+    _dateFromController = TextEditingController();
+    _dateToController = TextEditingController();
+    _filtersFuture = _loadFilters();
     _logsFuture = _fetchLogs();
+  }
+
+  @override
+  void dispose() {
+    _dateFromController.dispose();
+    _dateToController.dispose();
+    super.dispose();
+  }
+
+  Future<_HistoryFilterData> _loadFilters() async {
+    final results = await Future.wait([
+      widget.studentService.fetchStudents(widget.studyRoom.id),
+      widget.classService.fetchClasses(widget.studyRoom.id),
+    ]);
+    return _HistoryFilterData(
+      students: results[0] as List<ManagedStudent>,
+      classes: results[1] as List<ManagedClass>,
+    );
   }
 
   Future<List<KakaoNotificationLog>> _fetchLogs() {
     return widget.service.fetchLogs(
       studyRoomId: widget.studyRoom.id,
       status: _status,
+      studentId: _studentId,
+      classId: _classId,
+      dateFrom: _dateFromController.text.trim(),
+      dateTo: _dateToController.text.trim(),
     );
   }
 
-  void _setStatus(String status) {
+  void _refreshLogs() {
     setState(() {
-      _status = status;
       _logsFuture = _fetchLogs();
     });
   }
@@ -5124,28 +5229,50 @@ class _NotificationLogTabState extends State<_NotificationLogTab> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Wrap(
-          spacing: 8,
-          crossAxisAlignment: WrapCrossAlignment.center,
-          children: [
-            for (final item in statuses)
-              FilterChip(
-                label: Text(item.$2),
-                selected: _status == item.$1,
-                onSelected: (_) => _setStatus(item.$1),
-              ),
-            IconButton.filledTonal(
-              tooltip: '대기 발송 처리',
-              onPressed: _processingPending ? null : _processPending,
-              icon: _processingPending
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.send_outlined),
-            ),
-          ],
+        FutureBuilder<_HistoryFilterData>(
+          future: _filtersFuture,
+          builder: (context, snapshot) {
+            final filters = snapshot.data ?? const _HistoryFilterData();
+            return _HistoryFilterBar(
+              students: filters.students,
+              classes: filters.classes,
+              selectedStudentId: _studentId,
+              selectedClassId: _classId,
+              dateFromController: _dateFromController,
+              dateToController: _dateToController,
+              onStudentChanged: (value) {
+                _studentId = value;
+                _refreshLogs();
+              },
+              onClassChanged: (value) {
+                _classId = value;
+                _refreshLogs();
+              },
+              onDateSubmitted: _refreshLogs,
+              trailing: [
+                for (final item in statuses)
+                  FilterChip(
+                    label: Text(item.$2),
+                    selected: _status == item.$1,
+                    onSelected: (_) {
+                      _status = item.$1;
+                      _refreshLogs();
+                    },
+                  ),
+                IconButton.filledTonal(
+                  tooltip: '대기 발송 처리',
+                  onPressed: _processingPending ? null : _processPending,
+                  icon: _processingPending
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.send_outlined),
+                ),
+              ],
+            );
+          },
         ),
         const SizedBox(height: 8),
         Expanded(
@@ -5203,6 +5330,129 @@ class _NotificationLogTabState extends State<_NotificationLogTab> {
             },
           ),
         ),
+      ],
+    );
+  }
+}
+
+class _HistoryFilterData {
+  const _HistoryFilterData({
+    this.students = const <ManagedStudent>[],
+    this.classes = const <ManagedClass>[],
+  });
+
+  final List<ManagedStudent> students;
+  final List<ManagedClass> classes;
+}
+
+class _HistoryFilterBar extends StatelessWidget {
+  const _HistoryFilterBar({
+    required this.students,
+    required this.classes,
+    required this.selectedStudentId,
+    required this.selectedClassId,
+    required this.dateFromController,
+    required this.dateToController,
+    required this.onStudentChanged,
+    required this.onClassChanged,
+    required this.onDateSubmitted,
+    required this.trailing,
+  });
+
+  final List<ManagedStudent> students;
+  final List<ManagedClass> classes;
+  final String? selectedStudentId;
+  final String? selectedClassId;
+  final TextEditingController dateFromController;
+  final TextEditingController dateToController;
+  final ValueChanged<String?> onStudentChanged;
+  final ValueChanged<String?> onClassChanged;
+  final VoidCallback onDateSubmitted;
+  final List<Widget> trailing;
+
+  @override
+  Widget build(BuildContext context) {
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        SizedBox(
+          width: 150,
+          child: DropdownButtonFormField<String>(
+            initialValue: selectedStudentId ?? '',
+            isExpanded: true,
+            decoration: const InputDecoration(
+              labelText: '학생',
+              border: OutlineInputBorder(),
+              isDense: true,
+            ),
+            items: [
+              const DropdownMenuItem(value: '', child: Text('전체')),
+              for (final student in students)
+                DropdownMenuItem(
+                  value: student.id,
+                  child: Text(student.name, overflow: TextOverflow.ellipsis),
+                ),
+            ],
+            onChanged: (value) =>
+                onStudentChanged(value == null || value.isEmpty ? null : value),
+          ),
+        ),
+        SizedBox(
+          width: 170,
+          child: DropdownButtonFormField<String>(
+            initialValue: selectedClassId ?? '',
+            isExpanded: true,
+            decoration: const InputDecoration(
+              labelText: '수업',
+              border: OutlineInputBorder(),
+              isDense: true,
+            ),
+            items: [
+              const DropdownMenuItem(value: '', child: Text('전체')),
+              for (final classRoom in classes)
+                DropdownMenuItem(
+                  value: classRoom.id,
+                  child: Text(classRoom.name, overflow: TextOverflow.ellipsis),
+                ),
+            ],
+            onChanged: (value) =>
+                onClassChanged(value == null || value.isEmpty ? null : value),
+          ),
+        ),
+        SizedBox(
+          width: 132,
+          child: TextField(
+            controller: dateFromController,
+            decoration: const InputDecoration(
+              labelText: '시작일',
+              hintText: 'YYYY-MM-DD',
+              border: OutlineInputBorder(),
+              isDense: true,
+            ),
+            onSubmitted: (_) => onDateSubmitted(),
+          ),
+        ),
+        SizedBox(
+          width: 132,
+          child: TextField(
+            controller: dateToController,
+            decoration: const InputDecoration(
+              labelText: '종료일',
+              hintText: 'YYYY-MM-DD',
+              border: OutlineInputBorder(),
+              isDense: true,
+            ),
+            onSubmitted: (_) => onDateSubmitted(),
+          ),
+        ),
+        IconButton.filledTonal(
+          tooltip: '기간 적용',
+          onPressed: onDateSubmitted,
+          icon: const Icon(Icons.search),
+        ),
+        ...trailing,
       ],
     );
   }
