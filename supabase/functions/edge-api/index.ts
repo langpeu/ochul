@@ -1644,6 +1644,20 @@ async function updateClassSessionAttendance(
   if (error) throw new EdgeApiError(500, "출결 상태 저장에 실패했습니다.");
 
   const classInfo = await readClassInfo(db, session.class_id);
+  const notificationTime = record.checked_in_at ?? new Date().toISOString();
+  const notifications = await createAttendanceNotificationLogs(db, {
+    organizationId: session.organization_id,
+    studyRoomId: session.study_room_id,
+    classId: session.class_id,
+    classSessionId,
+    attendanceRecordId: record.id,
+    studentId,
+    studentName: student.name,
+    className: classInfo.name,
+    attendanceStatus: status,
+    checkedInAt: notificationTime,
+  });
+
   await createAuditLog(db, {
     organizationId: session.organization_id,
     studyRoomId: session.study_room_id,
@@ -1666,6 +1680,9 @@ async function updateClassSessionAttendance(
       status: record.status,
       checkedInAt: record.checked_in_at,
       note: record.note,
+    },
+    notifications: {
+      requested: notifications.length,
     },
   };
 }
@@ -2735,6 +2752,7 @@ async function checkInStudent(
     studentId,
     studentName: student.name,
     className: classInfo.name,
+    attendanceStatus: "present",
     checkedInAt: attendance.checked_in_at,
   });
 
@@ -3223,6 +3241,7 @@ async function createAttendanceNotificationLogs(
     studentId: string;
     studentName: string;
     className: string;
+    attendanceStatus: string;
     checkedInAt: string;
   },
 ) {
@@ -3242,28 +3261,33 @@ async function createAttendanceNotificationLogs(
       guardian.opt_out_at === null &&
       guardian.deleted_at === null
     )
-    .map((guardian) => ({
-      organization_id: input.organizationId,
-      study_room_id: input.studyRoomId,
-      student_id: input.studentId,
-      guardian_id: guardian.id,
-      class_id: input.classId,
-      class_session_id: input.classSessionId,
-      attendance_record_id: input.attendanceRecordId,
-      event_type: "attendance_checked_in",
-      channel: "kakao",
-      recipient_phone_masked: maskPhone(guardian.phone),
-      student_name: input.studentName,
-      class_name: input.className,
-      event_time: input.checkedInAt,
-      payload: buildKakaoTemplatePayload("attendance_checked_in", {
-        studentName: input.studentName,
-        className: input.className,
-        attendanceStatus: "present",
-        checkedInAt: input.checkedInAt,
-      }),
-      status: "pending",
-    }));
+    .map((guardian) => {
+      const eventType = input.attendanceStatus === "present"
+        ? "attendance_checked_in"
+        : "attendance_status_changed";
+      return {
+        organization_id: input.organizationId,
+        study_room_id: input.studyRoomId,
+        student_id: input.studentId,
+        guardian_id: guardian.id,
+        class_id: input.classId,
+        class_session_id: input.classSessionId,
+        attendance_record_id: input.attendanceRecordId,
+        event_type: eventType,
+        channel: "kakao",
+        recipient_phone_masked: maskPhone(guardian.phone),
+        student_name: input.studentName,
+        class_name: input.className,
+        event_time: input.checkedInAt,
+        payload: buildKakaoTemplatePayload(eventType, {
+          studentName: input.studentName,
+          className: input.className,
+          attendanceStatus: input.attendanceStatus,
+          checkedInAt: input.checkedInAt,
+        }),
+        status: "pending",
+      };
+    });
 
   if (rows.length === 0) return [];
 
@@ -4295,6 +4319,23 @@ function formatWon(value: unknown) {
   return `${Math.trunc(amount).toLocaleString("ko-KR")}원`;
 }
 
+function formatAttendanceStatusLabel(value: unknown) {
+  switch (stringValue(value)) {
+    case "present":
+      return "출석";
+    case "late":
+      return "지각";
+    case "absent":
+      return "결석";
+    case "excused":
+      return "인정결석";
+    case "left_early":
+      return "조퇴";
+    default:
+      return stringValue(value) || "출결 변경";
+  }
+}
+
 function todayDateString() {
   return new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Seoul",
@@ -4390,6 +4431,9 @@ function kakaoTemplateCode(eventType: string) {
     case "attendance_checked_in":
       return Deno.env.get("KAKAO_TEMPLATE_ATTENDANCE_CHECKED_IN") ??
         "ATTENDANCE_CHECKED_IN";
+    case "attendance_status_changed":
+      return Deno.env.get("KAKAO_TEMPLATE_ATTENDANCE_STATUS_CHANGED") ??
+        "ATTENDANCE_STATUS_CHANGED";
     case "payment_due_reminder":
       return Deno.env.get("KAKAO_TEMPLATE_PAYMENT_DUE_REMINDER") ??
         "PAYMENT_DUE_REMINDER";
@@ -4418,7 +4462,16 @@ function normalizeKakaoTemplateParams(
   put("className", params.className);
 
   if (eventType === "attendance_checked_in") {
-    put("attendanceStatus", params.attendanceStatus ?? "present");
+    put(
+      "attendanceStatus",
+      formatAttendanceStatusLabel(params.attendanceStatus),
+    );
+    put("checkedInAt", formatKakaoDateTime(params.checkedInAt));
+  } else if (eventType === "attendance_status_changed") {
+    put(
+      "attendanceStatus",
+      formatAttendanceStatusLabel(params.attendanceStatus),
+    );
     put("checkedInAt", formatKakaoDateTime(params.checkedInAt));
   } else if (eventType === "payment_due_reminder") {
     put("paymentPeriodName", params.paymentPeriodName);
@@ -4446,7 +4499,15 @@ function buildKakaoMessageText(
     case "attendance_checked_in":
       return `${params.studentName ?? "학생"} 학생이 ${
         params.className ?? "수업"
-      }에 출석했습니다. 출석시간: ${params.checkedInAt ?? ""}`;
+      }에 ${params.attendanceStatus ?? "출석"}했습니다. 시간: ${
+        params.checkedInAt ?? ""
+      }`;
+    case "attendance_status_changed":
+      return `${params.studentName ?? "학생"} 학생의 ${
+        params.className ?? "수업"
+      } 출결 상태가 ${
+        params.attendanceStatus ?? "변경"
+      } 처리되었습니다. 시간: ${params.checkedInAt ?? ""}`;
     case "payment_due_reminder":
       return `${params.studentName ?? "학생"} 학생의 ${
         params.paymentPeriodName ?? "수업료"

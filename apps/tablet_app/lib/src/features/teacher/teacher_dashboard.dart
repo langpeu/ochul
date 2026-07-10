@@ -3633,13 +3633,22 @@ class _AttendanceManagementPanelState
     if (sessionId == null) return;
     setState(() => _processingStudentId = student.id);
     try {
-      await widget.service.updateAttendance(
+      final result = await widget.service.updateAttendance(
         classSessionId: sessionId,
         studentId: student.id,
         status: status,
         note: '',
       );
-      if (mounted) setState(() => _dataFuture = _loadData());
+      if (mounted) {
+        setState(() => _dataFuture = _loadData());
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '출결 상태를 저장하고 카카오 알림 ${result.requestedNotifications}건을 요청했습니다.',
+            ),
+          ),
+        );
+      }
     } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(

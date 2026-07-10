@@ -47,6 +47,7 @@
 - `KAKAO_PROVIDER_API_KEY`
 - `KAKAO_SENDER_KEY`
 - `KAKAO_TEMPLATE_ATTENDANCE_CHECKED_IN`
+- `KAKAO_TEMPLATE_ATTENDANCE_STATUS_CHANGED`
 - `KAKAO_TEMPLATE_PAYMENT_DUE_REMINDER`
 - `KAKAO_TEMPLATE_CLASS_CANCELLED`
 - `KAKAO_TEMPLATE_CLASS_MAKEUP_ADDED`
@@ -75,6 +76,8 @@ Provider별 필드명이 다르면 `sendKakaoProviderMessage` adapter에서만 �
 - 출석 상태
 - 출석 시간
 - 보호자 이름
+
+학생 직접 출석뿐 아니라 선생님이 출석, 지각, 결석, 인정결석, 조퇴 상태를 수동 저장하는 경우에도 `pending` 카카오 알림 로그를 생성한다.
 
 ## 일정 변경 알림 예시 필드
 

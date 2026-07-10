@@ -25,13 +25,13 @@ class AttendanceManagementService {
     return TeacherAttendanceData.fromJson(data);
   }
 
-  Future<void> updateAttendance({
+  Future<AttendanceUpdateResult> updateAttendance({
     required String classSessionId,
     required String studentId,
     required String status,
     required String note,
   }) async {
-    await edgeClient.call(
+    final data = await edgeClient.call(
       '/class-sessions/$classSessionId/attendance',
       method: EdgeHttpMethod.patch,
       body: <String, dynamic>{
@@ -40,7 +40,24 @@ class AttendanceManagementService {
         'note': note,
       },
     );
+    return AttendanceUpdateResult.fromJson(data);
   }
+}
+
+class AttendanceUpdateResult {
+  const AttendanceUpdateResult({required this.requestedNotifications});
+
+  factory AttendanceUpdateResult.fromJson(Map<String, dynamic> json) {
+    final notifications = json['notifications'];
+    if (notifications is Map<String, dynamic>) {
+      return AttendanceUpdateResult(
+        requestedNotifications: notifications['requested'] as int? ?? 0,
+      );
+    }
+    return const AttendanceUpdateResult(requestedNotifications: 0);
+  }
+
+  final int requestedNotifications;
 }
 
 class TeacherAttendanceSession {
