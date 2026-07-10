@@ -5,6 +5,7 @@ import '../../core/edge_function_client.dart';
 import '../../core/teacher_gate.dart';
 import '../../models/sample_data.dart';
 import 'class_management_service.dart';
+import 'enrollment_management_service.dart';
 import 'student_management_service.dart';
 import 'teacher_home_service.dart';
 
@@ -27,6 +28,9 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
     edgeClient: EdgeFunctionClient(),
   );
   final _classService = const ClassManagementService(
+    edgeClient: EdgeFunctionClient(),
+  );
+  final _enrollmentService = const EnrollmentManagementService(
     edgeClient: EdgeFunctionClient(),
   );
 
@@ -70,6 +74,7 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
               homeService: _homeService,
               studentService: _studentService,
               classService: _classService,
+              enrollmentService: _enrollmentService,
             ),
           ),
         ],
@@ -84,12 +89,14 @@ class _TeacherBoardContent extends StatelessWidget {
     required this.homeService,
     required this.studentService,
     required this.classService,
+    required this.enrollmentService,
   });
 
   final AppConfig config;
   final TeacherHomeService homeService;
   final StudentManagementService studentService;
   final ClassManagementService classService;
+  final EnrollmentManagementService enrollmentService;
 
   @override
   Widget build(BuildContext context) {
@@ -137,6 +144,17 @@ class _TeacherBoardContent extends StatelessWidget {
                   : _StudentManagementPanel(
                       studyRoom: studyRoom,
                       service: studentService,
+                    ),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: studyRoom == null
+                  ? const _EmptyStudyRoomPanel()
+                  : _EnrollmentManagementPanel(
+                      studyRoom: studyRoom,
+                      classService: classService,
+                      studentService: studentService,
+                      enrollmentService: enrollmentService,
                     ),
             ),
             const SizedBox(width: 16),
@@ -801,6 +819,253 @@ class _EnrollmentPanel extends StatelessWidget {
       ),
     );
   }
+}
+
+class _EnrollmentManagementPanel extends StatefulWidget {
+  const _EnrollmentManagementPanel({
+    required this.studyRoom,
+    required this.classService,
+    required this.studentService,
+    required this.enrollmentService,
+  });
+
+  final StudyRoomSummary studyRoom;
+  final ClassManagementService classService;
+  final StudentManagementService studentService;
+  final EnrollmentManagementService enrollmentService;
+
+  @override
+  State<_EnrollmentManagementPanel> createState() =>
+      _EnrollmentManagementPanelState();
+}
+
+class _EnrollmentManagementPanelState
+    extends State<_EnrollmentManagementPanel> {
+  late Future<_EnrollmentData> _dataFuture;
+  String? _selectedClassId;
+  var _saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _dataFuture = _loadData();
+  }
+
+  Future<_EnrollmentData> _loadData() async {
+    final classes = await widget.classService.fetchClasses(widget.studyRoom.id);
+    final students = await widget.studentService.fetchStudents(
+      widget.studyRoom.id,
+    );
+    final selectedClassId = _selectedClassId ?? classes.firstOrNull?.id;
+    final enrolled = selectedClassId == null
+        ? const <ManagedStudent>[]
+        : await widget.enrollmentService.fetchClassStudents(selectedClassId);
+    _selectedClassId = selectedClassId;
+    return _EnrollmentData(
+      classes: classes,
+      students: students,
+      enrolled: enrolled,
+    );
+  }
+
+  Future<void> _saveEnrollment(List<String> studentIds) async {
+    final classId = _selectedClassId;
+    if (classId == null) {
+      return;
+    }
+    setState(() => _saving = true);
+    try {
+      await widget.enrollmentService.saveClassStudents(
+        classId: classId,
+        studentIds: studentIds,
+      );
+      if (mounted) {
+        setState(() => _dataFuture = _loadData());
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _saving = false);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('수강 등록', style: Theme.of(context).textTheme.titleLarge),
+            const SizedBox(height: 4),
+            Text(widget.studyRoom.name),
+            const SizedBox(height: 12),
+            Expanded(
+              child: FutureBuilder<_EnrollmentData>(
+                future: _dataFuture,
+                builder: (context, snapshot) {
+                  if (snapshot.connectionState != ConnectionState.done) {
+                    return const Center(child: CircularProgressIndicator());
+                  }
+                  if (snapshot.hasError) {
+                    return Text('수강 등록 정보를 불러오지 못했습니다. ${snapshot.error}');
+                  }
+                  final data = snapshot.requireData;
+                  if (data.classes.isEmpty) {
+                    return const Center(child: Text('수업을 먼저 생성해 주세요.'));
+                  }
+                  final selectedClass = data.classes.firstWhere(
+                    (classRoom) => classRoom.id == _selectedClassId,
+                    orElse: () => data.classes.first,
+                  );
+                  final enrolledIds = data.enrolled
+                      .map((student) => student.id)
+                      .toSet();
+                  final availableStudents = data.students
+                      .where((student) => !enrolledIds.contains(student.id))
+                      .toList();
+
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      DropdownButtonFormField<String>(
+                        initialValue: selectedClass.id,
+                        decoration: const InputDecoration(
+                          labelText: '수업',
+                          border: OutlineInputBorder(),
+                        ),
+                        items: [
+                          for (final classRoom in data.classes)
+                            DropdownMenuItem(
+                              value: classRoom.id,
+                              child: Text(classRoom.name),
+                            ),
+                        ],
+                        onChanged: _saving
+                            ? null
+                            : (classId) {
+                                setState(() {
+                                  _selectedClassId = classId;
+                                  _dataFuture = _loadData();
+                                });
+                              },
+                      ),
+                      const SizedBox(height: 12),
+                      Text(
+                        '미등록 학생',
+                        style: Theme.of(context).textTheme.titleSmall,
+                      ),
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          for (final student in availableStudents)
+                            Draggable<ManagedStudent>(
+                              data: student,
+                              feedback: Material(
+                                color: Colors.transparent,
+                                child: Chip(label: Text(student.name)),
+                              ),
+                              childWhenDragging: Opacity(
+                                opacity: 0.35,
+                                child: Chip(label: Text(student.name)),
+                              ),
+                              child: Chip(label: Text(student.name)),
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      Text(
+                        '등록 학생',
+                        style: Theme.of(context).textTheme.titleSmall,
+                      ),
+                      const SizedBox(height: 8),
+                      Expanded(
+                        child: DragTarget<ManagedStudent>(
+                          onAcceptWithDetails: (details) {
+                            if (_saving) return;
+                            final nextIds = [
+                              ...data.enrolled.map((student) => student.id),
+                              details.data.id,
+                            ];
+                            _saveEnrollment(nextIds);
+                          },
+                          builder: (context, candidates, rejected) {
+                            return DecoratedBox(
+                              decoration: BoxDecoration(
+                                border: Border.all(
+                                  color: candidates.isEmpty
+                                      ? const Color(0xFFE3E7EB)
+                                      : Theme.of(context).colorScheme.primary,
+                                ),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: data.enrolled.isEmpty
+                                  ? const Center(child: Text('학생을 이 영역에 놓아 등록'))
+                                  : ListView.builder(
+                                      itemCount: data.enrolled.length,
+                                      itemBuilder: (context, index) {
+                                        final student = data.enrolled[index];
+                                        return ListTile(
+                                          dense: true,
+                                          contentPadding:
+                                              const EdgeInsets.symmetric(
+                                                horizontal: 8,
+                                              ),
+                                          leading: const Icon(Icons.person),
+                                          title: Text(student.name),
+                                          subtitle: Text(student.code),
+                                          trailing: IconButton(
+                                            tooltip: '제외',
+                                            icon: const Icon(
+                                              Icons.remove_circle_outline,
+                                            ),
+                                            onPressed: _saving
+                                                ? null
+                                                : () {
+                                                    final nextIds = data
+                                                        .enrolled
+                                                        .where(
+                                                          (item) =>
+                                                              item.id !=
+                                                              student.id,
+                                                        )
+                                                        .map((item) => item.id)
+                                                        .toList();
+                                                    _saveEnrollment(nextIds);
+                                                  },
+                                          ),
+                                        );
+                                      },
+                                    ),
+                            );
+                          },
+                        ),
+                      ),
+                    ],
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _EnrollmentData {
+  const _EnrollmentData({
+    required this.classes,
+    required this.students,
+    required this.enrolled,
+  });
+
+  final List<ManagedClass> classes;
+  final List<ManagedStudent> students;
+  final List<ManagedStudent> enrolled;
 }
 
 class _StudentManagementPanel extends StatefulWidget {

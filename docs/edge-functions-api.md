@@ -89,7 +89,7 @@ Edge API 경로는 REST 스타일로 간결하고 명확하게 둔다.
 ### enrollments
 
 - `GET /classes/{classId}/students`: 수업 등록 학생 목록
-- `PUT /classes/{classId}/students`: 수업 등록 학생 저장
+- `PUT /classes/{classId}/students`: 수업 등록 학생 저장, 제외 학생은 비활성화
 - `PATCH /classes/{classId}/students/order`: 드래그앤드롭 순서 저장
 
 ### attendance

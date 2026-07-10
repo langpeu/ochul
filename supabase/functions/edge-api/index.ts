@@ -109,6 +109,16 @@ async function routeEdgeRequest(
     }
   }
 
+  const classStudentsMatch = path.match(/^\/classes\/([^/]+)\/students$/);
+  if (classStudentsMatch) {
+    if (method === "GET") {
+      return await listClassStudents(classStudentsMatch[1], context);
+    }
+    if (method === "PUT") {
+      return await saveClassStudents(classStudentsMatch[1], body, context);
+    }
+  }
+
   const checkInMatch = path.match(
     /^\/class-sessions\/([^/]+)\/check-in$/,
   );
@@ -383,6 +393,126 @@ async function createClass(
   };
 }
 
+async function listClassStudents(
+  classId: string,
+  { db, teacher }: AppContext,
+): Promise<Record<string, unknown>> {
+  const activeTeacher = requireTeacherProfile(teacher);
+  assertUuid(classId, "수업 정보가 올바르지 않습니다.");
+  await readAccessibleClass(db, classId, activeTeacher, { allowAdmin: true });
+
+  const { data: rows, error } = await db
+    .from("class_students")
+    .select(
+      "student_id, display_order, enrollment_kind, students!inner(id, student_code, name, status)",
+    )
+    .eq("class_id", classId)
+    .eq("active", true)
+    .order("display_order", { ascending: true });
+
+  if (error) throw new EdgeApiError(500, "수업 등록 학생 조회에 실패했습니다.");
+
+  return {
+    ok: true,
+    students: (rows ?? []).map((row) => {
+      const student = normalizeJoinedObject(row.students);
+      return {
+        id: student.id,
+        code: student.student_code,
+        name: student.name,
+        status: student.status,
+        displayOrder: row.display_order,
+        enrollmentKind: row.enrollment_kind,
+      };
+    }),
+  };
+}
+
+async function saveClassStudents(
+  classId: string,
+  body: Record<string, unknown>,
+  { db, teacher }: AppContext,
+): Promise<Record<string, unknown>> {
+  const activeTeacher = requireTeacherProfile(teacher);
+  assertUuid(classId, "수업 정보가 올바르지 않습니다.");
+  const classRoom = await readAccessibleClass(db, classId, activeTeacher, {
+    allowAdmin: false,
+  });
+  const studentIds = normalizeUuidList(
+    body.studentIds,
+    "학생 목록이 올바르지 않습니다.",
+  );
+
+  if (studentIds.length > 0) {
+    const { data: students, error: studentError } = await db
+      .from("students")
+      .select("id")
+      .eq("study_room_id", classRoom.study_room_id)
+      .in("id", studentIds);
+
+    if (studentError) {
+      throw new EdgeApiError(500, "학생 소속 확인에 실패했습니다.");
+    }
+    if ((students ?? []).length !== studentIds.length) {
+      throw new EdgeApiError(
+        400,
+        "같은 공부방 학생만 수업에 등록할 수 있습니다.",
+      );
+    }
+  }
+
+  let deactivateQuery = db
+    .from("class_students")
+    .update({ active: false })
+    .eq("class_id", classId);
+  if (studentIds.length > 0) {
+    deactivateQuery = deactivateQuery.not(
+      "student_id",
+      "in",
+      `(${studentIds.join(",")})`,
+    );
+  }
+  const { error: deactivateError } = await deactivateQuery;
+
+  if (deactivateError) {
+    throw new EdgeApiError(500, "수업 학생 제외에 실패했습니다.");
+  }
+
+  if (studentIds.length > 0) {
+    const rows = studentIds.map((studentId, index) => ({
+      class_id: classId,
+      student_id: studentId,
+      enrollment_kind: classRoom.class_kind,
+      display_order: index,
+      active: true,
+    }));
+
+    const { error: upsertError } = await db
+      .from("class_students")
+      .upsert(rows, { onConflict: "class_id,student_id" });
+
+    if (upsertError) {
+      throw new EdgeApiError(500, "수업 학생 등록 저장에 실패했습니다.");
+    }
+  }
+
+  await createClassStudentAuditLog(db, {
+    organizationId: classRoom.organization_id,
+    studyRoomId: classRoom.study_room_id,
+    actorTeacherId: activeTeacher.id,
+    classId,
+    title: "수업 학생 등록 변경",
+    summary:
+      `${classRoom.name} 수업의 등록 학생 ${studentIds.length}명을 저장했습니다.`,
+  });
+
+  return await listClassStudents(classId, {
+    db,
+    authUser: { id: "", email: null, name: null },
+    teacher: activeTeacher,
+  });
+}
+
 async function listStudents(
   studyRoomId: string,
   { db, teacher }: AppContext,
@@ -618,6 +748,24 @@ async function assertStudyRoomAccess(
 
   if (error) throw new EdgeApiError(500, "공부방 권한 확인에 실패했습니다.");
   if (!data) throw new EdgeApiError(403, "해당 공부방에 접근할 수 없습니다.");
+}
+
+async function readAccessibleClass(
+  db: SupabaseClient,
+  classId: string,
+  teacher: TeacherContext,
+  options: { allowAdmin: boolean },
+) {
+  const { data, error } = await db
+    .from("classes")
+    .select("id, organization_id, study_room_id, name, class_kind")
+    .eq("id", classId)
+    .maybeSingle();
+
+  if (error) throw new EdgeApiError(500, "수업 조회에 실패했습니다.");
+  if (!data) throw new EdgeApiError(404, "수업을 찾을 수 없습니다.");
+  await assertStudyRoomAccess(db, teacher, data.study_room_id, options);
+  return data;
 }
 
 async function readStudent(
@@ -877,6 +1025,32 @@ async function createClassAuditLog(
   if (error) throw new EdgeApiError(500, "사용 히스토리 기록에 실패했습니다.");
 }
 
+async function createClassStudentAuditLog(
+  db: SupabaseClient,
+  input: {
+    organizationId: string;
+    studyRoomId: string;
+    actorTeacherId: string;
+    classId: string;
+    title: string;
+    summary: string;
+  },
+) {
+  const { error } = await db.from("audit_logs").insert({
+    organization_id: input.organizationId,
+    study_room_id: input.studyRoomId,
+    actor_teacher_id: input.actorTeacherId,
+    class_id: input.classId,
+    entity_type: "class_student",
+    entity_id: input.classId,
+    action: "assigned",
+    title: input.title,
+    summary: input.summary,
+  });
+
+  if (error) throw new EdgeApiError(500, "사용 히스토리 기록에 실패했습니다.");
+}
+
 async function hashStudentPin(db: SupabaseClient, pin: string) {
   const { data, error } = await db.rpc("hash_student_pin", {
     plain_pin: pin,
@@ -1013,6 +1187,15 @@ function normalizeDayOfWeeks(value: unknown) {
   return days;
 }
 
+function normalizeUuidList(value: unknown, message: string) {
+  if (!Array.isArray(value)) throw new EdgeApiError(400, message);
+  const ids = [...new Set(value.map((item) => stringValue(item)))];
+  if (ids.some((id) => !uuidPattern.test(id))) {
+    throw new EdgeApiError(400, message);
+  }
+  return ids;
+}
+
 function normalizeTime(value: unknown, message: string) {
   const time = stringValue(value);
   if (!/^\d{2}:\d{2}$/.test(time)) throw new EdgeApiError(400, message);
@@ -1085,6 +1268,13 @@ function normalizeGuardianContact(value: unknown): GuardianContact[] {
     return value.filter(isGuardianContact);
   }
   return isGuardianContact(value) ? [value] : [];
+}
+
+function normalizeJoinedObject(value: unknown) {
+  if (Array.isArray(value)) {
+    return (value[0] ?? {}) as Record<string, unknown>;
+  }
+  return (value ?? {}) as Record<string, unknown>;
 }
 
 function isGuardianContact(value: unknown): value is GuardianContact {
