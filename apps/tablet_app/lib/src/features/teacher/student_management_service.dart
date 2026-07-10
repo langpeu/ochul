@@ -20,11 +20,21 @@ class StudentManagementService {
     required String name,
     required String code,
     required String pin,
+    required String gender,
+    required String ageGroup,
+    required String avatarKey,
   }) async {
     final data = await edgeClient.call(
       '/study-rooms/$studyRoomId/students',
       method: EdgeHttpMethod.post,
-      body: <String, dynamic>{'name': name, 'code': code, 'pin': pin},
+      body: <String, dynamic>{
+        'name': name,
+        'code': code,
+        'pin': pin,
+        'gender': gender,
+        'ageGroup': ageGroup,
+        'avatarKey': avatarKey,
+      },
     );
     final studentJson = data['student'];
     if (studentJson is Map<String, dynamic>) {
@@ -38,11 +48,21 @@ class StudentManagementService {
     required String name,
     required String code,
     required String status,
+    required String gender,
+    required String ageGroup,
+    required String avatarKey,
   }) async {
     final data = await edgeClient.call(
       '/students/$studentId',
       method: EdgeHttpMethod.patch,
-      body: <String, dynamic>{'name': name, 'code': code, 'status': status},
+      body: <String, dynamic>{
+        'name': name,
+        'code': code,
+        'status': status,
+        'gender': gender,
+        'ageGroup': ageGroup,
+        'avatarKey': avatarKey,
+      },
     );
     return _readStudent(data, '학생 수정 응답이 올바르지 않습니다.');
   }
@@ -110,6 +130,9 @@ class ManagedStudent {
     required this.code,
     required this.name,
     required this.status,
+    required this.gender,
+    required this.ageGroup,
+    required this.avatarKey,
   });
 
   factory ManagedStudent.fromJson(Map<String, dynamic> json) {
@@ -118,6 +141,9 @@ class ManagedStudent {
       code: json['code'] as String? ?? '',
       name: json['name'] as String? ?? '학생',
       status: json['status'] as String? ?? 'active',
+      gender: json['gender'] as String? ?? 'unspecified',
+      ageGroup: json['ageGroup'] as String? ?? 'elementary',
+      avatarKey: json['avatarKey'] as String? ?? 'elementary_unspecified_01',
     );
   }
 
@@ -125,6 +151,9 @@ class ManagedStudent {
   final String code;
   final String name;
   final String status;
+  final String gender;
+  final String ageGroup;
+  final String avatarKey;
 }
 
 class StudentGuardian {

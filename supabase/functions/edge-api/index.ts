@@ -2622,6 +2622,9 @@ async function createStudent(
   const name = stringValue(body.name);
   const code = stringValue(body.code);
   const pin = stringValue(body.pin);
+  const gender = normalizeStudentGender(body.gender);
+  const ageGroup = normalizeStudentAgeGroup(body.ageGroup);
+  const avatarKey = normalizeAvatarKey(body.avatarKey, gender, ageGroup);
   if (name.length < 2) {
     throw new EdgeApiError(400, "학생 이름을 입력해 주세요.");
   }
@@ -2651,6 +2654,9 @@ async function createStudent(
       pin_hash: await hashStudentPin(db, pin),
       pin_reset_required: false,
       status: "active",
+      gender,
+      age_group: ageGroup,
+      avatar_key: avatarKey,
     })
     .select("id, student_code, name, status, gender, age_group, avatar_key")
     .single();
@@ -2697,6 +2703,9 @@ async function updateStudent(
   const name = stringValue(body.name);
   const code = stringValue(body.code);
   const status = normalizeStudentStatus(body.status);
+  const gender = normalizeStudentGender(body.gender);
+  const ageGroup = normalizeStudentAgeGroup(body.ageGroup);
+  const avatarKey = normalizeAvatarKey(body.avatarKey, gender, ageGroup);
   if (name.length < 2) {
     throw new EdgeApiError(400, "학생 이름을 입력해 주세요.");
   }
@@ -2708,6 +2717,9 @@ async function updateStudent(
       student_code: code,
       name,
       status,
+      gender,
+      age_group: ageGroup,
+      avatar_key: avatarKey,
       updated_at: new Date().toISOString(),
     })
     .eq("id", studentId)
@@ -4410,6 +4422,34 @@ function normalizeStudentStatus(value: unknown) {
     throw new EdgeApiError(400, "학생 상태가 올바르지 않습니다.");
   }
   return status;
+}
+
+function normalizeStudentGender(value: unknown) {
+  const gender = stringValue(value) || "unspecified";
+  if (!["male", "female", "unspecified"].includes(gender)) {
+    throw new EdgeApiError(400, "학생 아바타 성별이 올바르지 않습니다.");
+  }
+  return gender;
+}
+
+function normalizeStudentAgeGroup(value: unknown) {
+  const ageGroup = stringValue(value) || "elementary";
+  if (!["elementary", "middle", "high"].includes(ageGroup)) {
+    throw new EdgeApiError(400, "학생 아바타 연령대가 올바르지 않습니다.");
+  }
+  return ageGroup;
+}
+
+function normalizeAvatarKey(
+  value: unknown,
+  gender: string,
+  ageGroup: string,
+) {
+  const avatarKey = stringValue(value) || `${ageGroup}_${gender}_01`;
+  if (!/^[a-z0-9_-]{3,64}$/.test(avatarKey)) {
+    throw new EdgeApiError(400, "학생 아바타 키가 올바르지 않습니다.");
+  }
+  return avatarKey;
 }
 
 function normalizeGuardianInputs(value: unknown) {

@@ -3127,6 +3127,8 @@ class _StudentManagementPanelState extends State<_StudentManagementPanel> {
   String? _errorText;
   var _submitting = false;
   String? _processingStudentId;
+  String _gender = 'unspecified';
+  String _ageGroup = 'elementary';
 
   @override
   void initState() {
@@ -3161,10 +3163,15 @@ class _StudentManagementPanelState extends State<_StudentManagementPanel> {
         name: name,
         code: code,
         pin: pin,
+        gender: _gender,
+        ageGroup: _ageGroup,
+        avatarKey: _studentAvatarKey(_gender, _ageGroup),
       );
       _nameController.clear();
       _codeController.clear();
       _pinController.clear();
+      _gender = 'unspecified';
+      _ageGroup = 'elementary';
       if (mounted) {
         setState(() {
           _studentsFuture = widget.service.fetchStudents(widget.studyRoom.id);
@@ -3201,6 +3208,9 @@ class _StudentManagementPanelState extends State<_StudentManagementPanel> {
         name: result.name,
         code: result.code,
         status: result.status,
+        gender: result.gender,
+        ageGroup: result.ageGroup,
+        avatarKey: result.avatarKey,
       );
       if (mounted) {
         await _refreshStudents();
@@ -3353,6 +3363,42 @@ class _StudentManagementPanelState extends State<_StudentManagementPanel> {
                     onSubmitted: (_) => _submitting ? null : _createStudent(),
                   ),
                 ),
+                SizedBox(
+                  width: 130,
+                  child: DropdownButtonFormField<String>(
+                    initialValue: _ageGroup,
+                    decoration: const InputDecoration(
+                      labelText: '연령대',
+                      border: OutlineInputBorder(),
+                    ),
+                    items: _studentAgeGroupMenuItems(),
+                    onChanged: _submitting
+                        ? null
+                        : (value) {
+                            if (value != null) {
+                              setState(() => _ageGroup = value);
+                            }
+                          },
+                  ),
+                ),
+                SizedBox(
+                  width: 130,
+                  child: DropdownButtonFormField<String>(
+                    initialValue: _gender,
+                    decoration: const InputDecoration(
+                      labelText: '아바타',
+                      border: OutlineInputBorder(),
+                    ),
+                    items: _studentGenderMenuItems(),
+                    onChanged: _submitting
+                        ? null
+                        : (value) {
+                            if (value != null) {
+                              setState(() => _gender = value);
+                            }
+                          },
+                  ),
+                ),
                 FilledButton.icon(
                   onPressed: _submitting ? null : _createStudent,
                   icon: const Icon(Icons.person_add_alt_1),
@@ -3385,7 +3431,7 @@ class _StudentManagementPanelState extends State<_StudentManagementPanel> {
                         leading: const Icon(Icons.person_outline),
                         title: Text(student.name),
                         subtitle: Text(
-                          '${student.code} · ${_studentStatusLabel(student.status)}',
+                          '${student.code} · ${_studentStatusLabel(student.status)} · ${_studentAgeGroupLabel(student.ageGroup)} · ${_studentGenderLabel(student.gender)}',
                         ),
                         trailing: processing
                             ? const SizedBox(
@@ -3464,11 +3510,17 @@ class _StudentEditResult {
     required this.name,
     required this.code,
     required this.status,
+    required this.gender,
+    required this.ageGroup,
+    required this.avatarKey,
   });
 
   final String name;
   final String code;
   final String status;
+  final String gender;
+  final String ageGroup;
+  final String avatarKey;
 }
 
 class _StudentEditDialog extends StatefulWidget {
@@ -3484,6 +3536,8 @@ class _StudentEditDialogState extends State<_StudentEditDialog> {
   late final TextEditingController _nameController;
   late final TextEditingController _codeController;
   late String _status;
+  late String _gender;
+  late String _ageGroup;
   String? _errorText;
 
   @override
@@ -3492,6 +3546,8 @@ class _StudentEditDialogState extends State<_StudentEditDialog> {
     _nameController = TextEditingController(text: widget.student.name);
     _codeController = TextEditingController(text: widget.student.code);
     _status = widget.student.status;
+    _gender = widget.student.gender;
+    _ageGroup = widget.student.ageGroup;
   }
 
   @override
@@ -3508,9 +3564,16 @@ class _StudentEditDialogState extends State<_StudentEditDialog> {
       setState(() => _errorText = '학생 이름과 학생번호를 입력해 주세요.');
       return;
     }
-    Navigator.of(
-      context,
-    ).pop(_StudentEditResult(name: name, code: code, status: _status));
+    Navigator.of(context).pop(
+      _StudentEditResult(
+        name: name,
+        code: code,
+        status: _status,
+        gender: _gender,
+        ageGroup: _ageGroup,
+        avatarKey: _studentAvatarKey(_gender, _ageGroup),
+      ),
+    );
   }
 
   @override
@@ -3555,6 +3618,42 @@ class _StudentEditDialogState extends State<_StudentEditDialog> {
                   setState(() => _status = value);
                 }
               },
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: DropdownButtonFormField<String>(
+                    initialValue: _ageGroup,
+                    decoration: const InputDecoration(
+                      labelText: '연령대',
+                      border: OutlineInputBorder(),
+                    ),
+                    items: _studentAgeGroupMenuItems(),
+                    onChanged: (value) {
+                      if (value != null) {
+                        setState(() => _ageGroup = value);
+                      }
+                    },
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: DropdownButtonFormField<String>(
+                    initialValue: _gender,
+                    decoration: const InputDecoration(
+                      labelText: '아바타',
+                      border: OutlineInputBorder(),
+                    ),
+                    items: _studentGenderMenuItems(),
+                    onChanged: (value) {
+                      if (value != null) {
+                        setState(() => _gender = value);
+                      }
+                    },
+                  ),
+                ),
+              ],
             ),
           ],
         ),
@@ -5035,6 +5134,42 @@ String _studentStatusLabel(String status) {
     'left' => '퇴원',
     _ => '재원',
   };
+}
+
+String _studentGenderLabel(String gender) {
+  return switch (gender) {
+    'male' => '남',
+    'female' => '여',
+    _ => '미지정',
+  };
+}
+
+String _studentAgeGroupLabel(String ageGroup) {
+  return switch (ageGroup) {
+    'middle' => '중등',
+    'high' => '고등',
+    _ => '초등',
+  };
+}
+
+String _studentAvatarKey(String gender, String ageGroup) {
+  return '${ageGroup}_${gender}_01';
+}
+
+List<DropdownMenuItem<String>> _studentGenderMenuItems() {
+  return const [
+    DropdownMenuItem(value: 'unspecified', child: Text('미지정')),
+    DropdownMenuItem(value: 'male', child: Text('남')),
+    DropdownMenuItem(value: 'female', child: Text('여')),
+  ];
+}
+
+List<DropdownMenuItem<String>> _studentAgeGroupMenuItems() {
+  return const [
+    DropdownMenuItem(value: 'elementary', child: Text('초등')),
+    DropdownMenuItem(value: 'middle', child: Text('중등')),
+    DropdownMenuItem(value: 'high', child: Text('고등')),
+  ];
 }
 
 String _paymentStatusLabel(String status) {
