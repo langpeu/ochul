@@ -4038,6 +4038,7 @@ class _GuardianDraft {
     required this.kakaoOptIn,
     required this.consentConfirmed,
     required this.primaryContact,
+    required this.deleted,
   });
 
   factory _GuardianDraft.fromGuardian(StudentGuardian guardian) {
@@ -4049,6 +4050,7 @@ class _GuardianDraft {
       kakaoOptIn: guardian.kakaoOptIn,
       consentConfirmed: guardian.consentConfirmed,
       primaryContact: guardian.primaryContact,
+      deleted: guardian.deleted,
     );
   }
 
@@ -4059,6 +4061,7 @@ class _GuardianDraft {
   bool kakaoOptIn;
   bool consentConfirmed;
   bool primaryContact;
+  bool deleted;
 
   StudentGuardian toGuardian() {
     return StudentGuardian(
@@ -4066,9 +4069,10 @@ class _GuardianDraft {
       name: name.trim(),
       phone: phone.trim(),
       relationship: relationship.trim(),
-      kakaoOptIn: kakaoOptIn,
-      consentConfirmed: consentConfirmed,
-      primaryContact: primaryContact,
+      kakaoOptIn: deleted ? false : kakaoOptIn,
+      consentConfirmed: deleted ? false : consentConfirmed,
+      primaryContact: deleted ? false : primaryContact,
+      deleted: deleted,
     );
   }
 }
@@ -4116,6 +4120,7 @@ class _StudentGuardiansDialogState extends State<_StudentGuardiansDialog> {
           kakaoOptIn: false,
           consentConfirmed: false,
           primaryContact: _drafts.isEmpty,
+          deleted: false,
         ),
       );
     });
@@ -4135,6 +4140,10 @@ class _StudentGuardiansDialogState extends State<_StudentGuardiansDialog> {
     }
     if (guardians.where((guardian) => guardian.primaryContact).length > 1) {
       setState(() => _errorText = '대표 연락처는 한 명만 선택해 주세요.');
+      return;
+    }
+    if (guardians.any((guardian) => guardian.deleted && guardian.id.isEmpty)) {
+      setState(() => _errorText = '새 보호자는 정보 삭제 요청 대신 목록에서 제거해 주세요.');
       return;
     }
 
@@ -4190,7 +4199,7 @@ class _StudentGuardiansDialogState extends State<_StudentGuardiansDialog> {
                 const Align(
                   alignment: Alignment.centerLeft,
                   child: Text(
-                    '카카오 수신 동의는 출결, 수업 변경, 수업료 안내 목적을 보호자에게 고지하고 확인한 경우에만 켜 주세요.',
+                    '카카오 수신 동의는 고지 후 확인한 경우에만 켜 주세요. 수신 거부는 동의를 끄고, 정보 삭제 요청은 별도 표시해 저장합니다.',
                   ),
                 ),
                 const SizedBox(height: 8),
@@ -4262,7 +4271,12 @@ class _StudentGuardiansDialogState extends State<_StudentGuardiansDialog> {
                                           FilterChip(
                                             label: const Text('카카오 수신 동의'),
                                             selected: draft.kakaoOptIn,
+                                            showCheckmark: true,
+                                            avatar: draft.deleted
+                                                ? const Icon(Icons.block)
+                                                : null,
                                             onSelected: (selected) {
+                                              if (draft.deleted) return;
                                               setState(() {
                                                 draft.kakaoOptIn = selected;
                                                 draft.consentConfirmed =
@@ -4275,6 +4289,7 @@ class _StudentGuardiansDialogState extends State<_StudentGuardiansDialog> {
                                             label: const Text('대표'),
                                             selected: draft.primaryContact,
                                             onSelected: (selected) {
+                                              if (draft.deleted) return;
                                               setState(() {
                                                 for (final item in _drafts) {
                                                   item.primaryContact = false;
@@ -4282,6 +4297,29 @@ class _StudentGuardiansDialogState extends State<_StudentGuardiansDialog> {
                                                 draft.primaryContact = selected;
                                               });
                                             },
+                                          ),
+                                          const SizedBox(width: 8),
+                                          FilterChip(
+                                            label: const Text('정보 삭제 요청'),
+                                            selected: draft.deleted,
+                                            selectedColor: const Color(
+                                              0xFFFFE7E7,
+                                            ),
+                                            onSelected: draft.id.isEmpty
+                                                ? null
+                                                : (selected) {
+                                                    setState(() {
+                                                      draft.deleted = selected;
+                                                      if (selected) {
+                                                        draft.kakaoOptIn =
+                                                            false;
+                                                        draft.consentConfirmed =
+                                                            false;
+                                                        draft.primaryContact =
+                                                            false;
+                                                      }
+                                                    });
+                                                  },
                                           ),
                                           IconButton(
                                             tooltip: '삭제',

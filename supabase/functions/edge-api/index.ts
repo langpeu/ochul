@@ -3050,7 +3050,7 @@ async function listStudentGuardians(
   const { data: rows, error } = await db
     .from("student_guardians")
     .select(
-      "relationship, primary_contact, guardians!inner(id, name, phone, kakao_opt_in, consent_confirmed_at, opt_out_at)",
+      "relationship, primary_contact, guardians!inner(id, name, phone, kakao_opt_in, consent_confirmed_at, opt_out_at, deleted_at)",
     )
     .eq("student_id", studentId)
     .order("created_at", { ascending: true });
@@ -3079,21 +3079,26 @@ async function saveStudentGuardians(
     const currentGuardian = guardianId
       ? await readGuardianForStudyRoom(db, guardianId, student.study_room_id)
       : null;
-    const consentConfirmedAt = guardianInput.kakaoOptIn
+    const deletedAt = guardianInput.deleted ? new Date().toISOString() : null;
+    const kakaoOptIn = guardianInput.deleted ? false : guardianInput.kakaoOptIn;
+    const primaryContact = guardianInput.deleted
+      ? false
+      : guardianInput.primaryContact;
+    const consentConfirmedAt = kakaoOptIn
       ? currentGuardian?.consent_confirmed_at ?? new Date().toISOString()
       : null;
-    const consentConfirmedByTeacherId = guardianInput.kakaoOptIn
+    const consentConfirmedByTeacherId = kakaoOptIn
       ? currentGuardian?.consent_confirmed_by_teacher_id ?? activeTeacher.id
       : null;
     const guardianValues = {
       name: guardianInput.name || null,
       phone: guardianInput.phone,
-      kakao_opt_in: guardianInput.kakaoOptIn,
+      kakao_opt_in: kakaoOptIn,
       consent_confirmed_at: consentConfirmedAt,
-      consent_method: guardianInput.kakaoOptIn ? "teacher_confirmed" : null,
+      consent_method: kakaoOptIn ? "teacher_confirmed" : null,
       consent_confirmed_by_teacher_id: consentConfirmedByTeacherId,
-      opt_out_at: guardianInput.kakaoOptIn ? null : new Date().toISOString(),
-      deleted_at: null,
+      opt_out_at: kakaoOptIn ? null : new Date().toISOString(),
+      deleted_at: deletedAt,
     };
 
     if (guardianId) {
@@ -3131,7 +3136,7 @@ async function saveStudentGuardians(
         student_id: studentId,
         guardian_id: guardianId,
         relationship: guardianInput.relationship || null,
-        primary_contact: guardianInput.primaryContact,
+        primary_contact: primaryContact,
       }, { onConflict: "student_id,guardian_id" });
     if (linkError) {
       throw new EdgeApiError(500, "학생 보호자 연결 저장에 실패했습니다.");
@@ -4977,7 +4982,14 @@ function normalizeGuardianInputs(value: unknown) {
     }
     const kakaoOptIn = input.kakaoOptIn === true;
     const consentConfirmed = input.consentConfirmed === true;
-    if (kakaoOptIn && !consentConfirmed) {
+    const deleted = input.deleted === true;
+    if (!id && deleted) {
+      throw new EdgeApiError(
+        400,
+        "저장된 보호자만 정보 삭제 요청할 수 있습니다.",
+      );
+    }
+    if (kakaoOptIn && !consentConfirmed && !deleted) {
       throw new EdgeApiError(400, "보호자 카카오 수신 동의 확인이 필요합니다.");
     }
     return {
@@ -4985,9 +4997,10 @@ function normalizeGuardianInputs(value: unknown) {
       name,
       phone,
       relationship,
-      kakaoOptIn,
-      consentConfirmed,
-      primaryContact: input.primaryContact === true,
+      kakaoOptIn: deleted ? false : kakaoOptIn,
+      consentConfirmed: deleted ? false : consentConfirmed,
+      primaryContact: deleted ? false : input.primaryContact === true,
+      deleted,
     };
   });
 }
@@ -5199,6 +5212,7 @@ function formatStudentGuardian(row: Record<string, unknown>) {
     kakaoOptIn: guardian.kakao_opt_in === true && guardian.opt_out_at === null,
     consentConfirmed: guardian.consent_confirmed_at !== null,
     primaryContact: row.primary_contact,
+    deleted: guardian.deleted_at !== null,
   };
 }
 

@@ -165,6 +165,7 @@ class StudentGuardian {
     required this.kakaoOptIn,
     required this.consentConfirmed,
     required this.primaryContact,
+    required this.deleted,
   });
 
   factory StudentGuardian.fromJson(Map<String, dynamic> json) {
@@ -179,6 +180,7 @@ class StudentGuardian {
           json['kakaoOptIn'] as bool? ??
           false,
       primaryContact: json['primaryContact'] as bool? ?? false,
+      deleted: json['deleted'] as bool? ?? false,
     );
   }
 
@@ -189,6 +191,7 @@ class StudentGuardian {
   final bool kakaoOptIn;
   final bool consentConfirmed;
   final bool primaryContact;
+  final bool deleted;
 
   Map<String, dynamic> toJson() {
     return <String, dynamic>{
@@ -199,6 +202,7 @@ class StudentGuardian {
       'kakaoOptIn': kakaoOptIn,
       'consentConfirmed': consentConfirmed,
       'primaryContact': primaryContact,
+      'deleted': deleted,
     };
   }
 }
