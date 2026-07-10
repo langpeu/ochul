@@ -71,6 +71,8 @@ Edge API 경로는 REST 스타일로 간결하고 명확하게 둔다.
 - `POST /students/{studentId}/pin/reset`: 학생 출결 비밀번호 리셋
 - `GET /students/{studentId}/guardians`: 학생 보호자 목록
 - `PUT /students/{studentId}/guardians`: 보호자 연락처, 관계, 카카오 수신 동의, 대표 연락처 저장
+  - Body: `{ "guardians": [{ "name": "보호자", "phone": "01012345678", "relationship": "모", "kakaoOptIn": true, "consentConfirmed": true, "primaryContact": true }] }`
+  - `kakaoOptIn=true`인 경우 `consentConfirmed=true`가 필요하다.
 
 ### classes
 

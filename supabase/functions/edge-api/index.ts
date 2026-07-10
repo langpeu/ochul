@@ -2689,7 +2689,7 @@ async function listStudentGuardians(
   const { data: rows, error } = await db
     .from("student_guardians")
     .select(
-      "relationship, primary_contact, guardians!inner(id, name, phone, kakao_opt_in, opt_out_at)",
+      "relationship, primary_contact, guardians!inner(id, name, phone, kakao_opt_in, consent_confirmed_at, opt_out_at)",
     )
     .eq("student_id", studentId)
     .order("created_at", { ascending: true });
@@ -2715,17 +2715,22 @@ async function saveStudentGuardians(
   const keptGuardianIds: string[] = [];
   for (const guardianInput of guardians) {
     let guardianId = guardianInput.id;
+    const currentGuardian = guardianId
+      ? await readGuardianForStudyRoom(db, guardianId, student.study_room_id)
+      : null;
+    const consentConfirmedAt = guardianInput.kakaoOptIn
+      ? currentGuardian?.consent_confirmed_at ?? new Date().toISOString()
+      : null;
+    const consentConfirmedByTeacherId = guardianInput.kakaoOptIn
+      ? currentGuardian?.consent_confirmed_by_teacher_id ?? activeTeacher.id
+      : null;
     const guardianValues = {
       name: guardianInput.name || null,
       phone: guardianInput.phone,
       kakao_opt_in: guardianInput.kakaoOptIn,
-      consent_confirmed_at: guardianInput.kakaoOptIn
-        ? new Date().toISOString()
-        : null,
+      consent_confirmed_at: consentConfirmedAt,
       consent_method: guardianInput.kakaoOptIn ? "teacher_confirmed" : null,
-      consent_confirmed_by_teacher_id: guardianInput.kakaoOptIn
-        ? activeTeacher.id
-        : null,
+      consent_confirmed_by_teacher_id: consentConfirmedByTeacherId,
       opt_out_at: guardianInput.kakaoOptIn ? null : new Date().toISOString(),
       deleted_at: null,
     };
@@ -3261,6 +3266,23 @@ async function readStudentForOwnerWrite(
   if (studyRoom.owner_teacher_id !== teacher.id) {
     throw new EdgeApiError(403, "해당 학생을 수정할 수 없습니다.");
   }
+  return data;
+}
+
+async function readGuardianForStudyRoom(
+  db: SupabaseClient,
+  guardianId: string,
+  studyRoomId: string,
+) {
+  const { data, error } = await db
+    .from("guardians")
+    .select("id, consent_confirmed_at, consent_confirmed_by_teacher_id")
+    .eq("id", guardianId)
+    .eq("study_room_id", studyRoomId)
+    .maybeSingle();
+
+  if (error) throw new EdgeApiError(500, "보호자 정보 조회에 실패했습니다.");
+  if (!data) throw new EdgeApiError(404, "보호자 정보를 찾을 수 없습니다.");
   return data;
 }
 
@@ -4263,12 +4285,18 @@ function normalizeGuardianInputs(value: unknown) {
     if (phone.length < 7) {
       throw new EdgeApiError(400, "보호자 전화번호를 입력해 주세요.");
     }
+    const kakaoOptIn = input.kakaoOptIn === true;
+    const consentConfirmed = input.consentConfirmed === true;
+    if (kakaoOptIn && !consentConfirmed) {
+      throw new EdgeApiError(400, "보호자 카카오 수신 동의 확인이 필요합니다.");
+    }
     return {
       id: id || null,
       name,
       phone,
       relationship,
-      kakaoOptIn: input.kakaoOptIn !== false,
+      kakaoOptIn,
+      consentConfirmed,
       primaryContact: input.primaryContact === true,
     };
   });
@@ -4467,6 +4495,7 @@ function formatStudentGuardian(row: Record<string, unknown>) {
     phone: guardian.phone,
     relationship: row.relationship,
     kakaoOptIn: guardian.kakao_opt_in === true && guardian.opt_out_at === null,
+    consentConfirmed: guardian.consent_confirmed_at !== null,
     primaryContact: row.primary_contact,
   };
 }

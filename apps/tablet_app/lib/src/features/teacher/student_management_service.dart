@@ -134,6 +134,7 @@ class StudentGuardian {
     required this.phone,
     required this.relationship,
     required this.kakaoOptIn,
+    required this.consentConfirmed,
     required this.primaryContact,
   });
 
@@ -144,6 +145,10 @@ class StudentGuardian {
       phone: json['phone'] as String? ?? '',
       relationship: json['relationship'] as String? ?? '',
       kakaoOptIn: json['kakaoOptIn'] as bool? ?? true,
+      consentConfirmed:
+          json['consentConfirmed'] as bool? ??
+          json['kakaoOptIn'] as bool? ??
+          false,
       primaryContact: json['primaryContact'] as bool? ?? false,
     );
   }
@@ -153,6 +158,7 @@ class StudentGuardian {
   final String phone;
   final String relationship;
   final bool kakaoOptIn;
+  final bool consentConfirmed;
   final bool primaryContact;
 
   Map<String, dynamic> toJson() {
@@ -162,6 +168,7 @@ class StudentGuardian {
       'phone': phone,
       'relationship': relationship,
       'kakaoOptIn': kakaoOptIn,
+      'consentConfirmed': consentConfirmed,
       'primaryContact': primaryContact,
     };
   }

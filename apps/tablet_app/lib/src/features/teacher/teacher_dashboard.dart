@@ -3499,6 +3499,7 @@ class _GuardianDraft {
     required this.phone,
     required this.relationship,
     required this.kakaoOptIn,
+    required this.consentConfirmed,
     required this.primaryContact,
   });
 
@@ -3509,6 +3510,7 @@ class _GuardianDraft {
       phone: guardian.phone,
       relationship: guardian.relationship,
       kakaoOptIn: guardian.kakaoOptIn,
+      consentConfirmed: guardian.consentConfirmed,
       primaryContact: guardian.primaryContact,
     );
   }
@@ -3518,6 +3520,7 @@ class _GuardianDraft {
   String phone;
   String relationship;
   bool kakaoOptIn;
+  bool consentConfirmed;
   bool primaryContact;
 
   StudentGuardian toGuardian() {
@@ -3527,6 +3530,7 @@ class _GuardianDraft {
       phone: phone.trim(),
       relationship: relationship.trim(),
       kakaoOptIn: kakaoOptIn,
+      consentConfirmed: consentConfirmed,
       primaryContact: primaryContact,
     );
   }
@@ -3572,7 +3576,8 @@ class _StudentGuardiansDialogState extends State<_StudentGuardiansDialog> {
           name: '',
           phone: '',
           relationship: '',
-          kakaoOptIn: true,
+          kakaoOptIn: false,
+          consentConfirmed: false,
           primaryContact: _drafts.isEmpty,
         ),
       );
@@ -3583,6 +3588,12 @@ class _StudentGuardiansDialogState extends State<_StudentGuardiansDialog> {
     final guardians = _drafts.map((draft) => draft.toGuardian()).toList();
     if (guardians.any((guardian) => guardian.phone.trim().length < 7)) {
       setState(() => _errorText = '보호자 전화번호를 입력해 주세요.');
+      return;
+    }
+    if (guardians.any(
+      (guardian) => guardian.kakaoOptIn && !guardian.consentConfirmed,
+    )) {
+      setState(() => _errorText = '카카오 수신 동의 확인 후 저장해 주세요.');
       return;
     }
     if (guardians.where((guardian) => guardian.primaryContact).length > 1) {
@@ -3639,6 +3650,13 @@ class _StudentGuardiansDialogState extends State<_StudentGuardiansDialog> {
                       ),
                     ),
                   ),
+                const Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    '카카오 수신 동의는 출결, 수업 변경, 수업료 안내 목적을 보호자에게 고지하고 확인한 경우에만 켜 주세요.',
+                  ),
+                ),
+                const SizedBox(height: 8),
                 ConstrainedBox(
                   constraints: const BoxConstraints(maxHeight: 360),
                   child: _drafts.isEmpty
@@ -3705,11 +3723,13 @@ class _StudentGuardiansDialogState extends State<_StudentGuardiansDialog> {
                                           ),
                                           const SizedBox(width: 8),
                                           FilterChip(
-                                            label: const Text('카카오 수신'),
+                                            label: const Text('카카오 수신 동의'),
                                             selected: draft.kakaoOptIn,
                                             onSelected: (selected) {
                                               setState(() {
                                                 draft.kakaoOptIn = selected;
+                                                draft.consentConfirmed =
+                                                    selected;
                                               });
                                             },
                                           ),
