@@ -1,0 +1,32 @@
+.DS_Store
+
+# Flutter/Dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+build/
+coverage/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Local env and secrets
+.env
+.env.*
+!.env.example
+.codex/config.toml
+.mcp.json
+Secrets.config
+**/Secrets.config
+
+# Supabase
+supabase/config.toml
+supabase/.branches/
+supabase/.temp/
+
+# Generated/local artifacts
+screenshots/
+tmp/
