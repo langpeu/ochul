@@ -1191,6 +1191,44 @@ class _ClassManagementPanelState extends State<_ClassManagementPanel> {
     }
   }
 
+  Future<void> _createSession(ManagedClass classRoom) async {
+    final result = await showDialog<_ClassSessionCreateResult>(
+      context: context,
+      builder: (context) =>
+          _ClassSessionCreateDialog(className: classRoom.name),
+    );
+    if (result == null) return;
+
+    setState(() => _processingClassId = classRoom.id);
+    try {
+      final session = await widget.service.createClassSession(
+        classId: classRoom.id,
+        sessionDate: result.sessionDate,
+        startsAt: result.startsAt,
+        endsAt: result.endsAt,
+        status: result.status,
+        reason: result.reason,
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '${session.className} ${session.sessionDate} 회차를 생성했습니다.',
+            ),
+          ),
+        );
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('회차 생성에 실패했습니다.')));
+      }
+    } finally {
+      if (mounted) setState(() => _processingClassId = null);
+    }
+  }
+
   Future<void> _cancelToday(ManagedClass classRoom) async {
     final result = await showDialog<_ClassCancelResult>(
       context: context,
@@ -1536,6 +1574,8 @@ class _ClassManagementPanelState extends State<_ClassManagementPanel> {
                                   switch (action) {
                                     case _ClassAction.openAttendance:
                                       _openAttendance(classRoom);
+                                    case _ClassAction.createSession:
+                                      _createSession(classRoom);
                                     case _ClassAction.cancelToday:
                                       _cancelToday(classRoom);
                                     case _ClassAction.createMakeup:
@@ -1554,6 +1594,15 @@ class _ClassManagementPanelState extends State<_ClassManagementPanel> {
                                     child: ListTile(
                                       leading: Icon(Icons.play_circle_outline),
                                       title: Text('출석 열기'),
+                                    ),
+                                  ),
+                                  PopupMenuItem(
+                                    value: _ClassAction.createSession,
+                                    child: ListTile(
+                                      leading: Icon(
+                                        Icons.event_available_outlined,
+                                      ),
+                                      title: Text('회차 생성'),
                                     ),
                                   ),
                                   PopupMenuItem(
@@ -1609,6 +1658,7 @@ class _ClassManagementPanelState extends State<_ClassManagementPanel> {
 
 enum _ClassAction {
   openAttendance,
+  createSession,
   cancelToday,
   createMakeup,
   rescheduleToday,
@@ -1854,6 +1904,155 @@ class _ClassCancelResult {
 
   final String sessionDate;
   final String reason;
+}
+
+class _ClassSessionCreateResult {
+  const _ClassSessionCreateResult({
+    required this.sessionDate,
+    required this.startsAt,
+    required this.endsAt,
+    required this.status,
+    required this.reason,
+  });
+
+  final String sessionDate;
+  final String startsAt;
+  final String endsAt;
+  final String status;
+  final String reason;
+}
+
+class _ClassSessionCreateDialog extends StatefulWidget {
+  const _ClassSessionCreateDialog({required this.className});
+
+  final String className;
+
+  @override
+  State<_ClassSessionCreateDialog> createState() =>
+      _ClassSessionCreateDialogState();
+}
+
+class _ClassSessionCreateDialogState extends State<_ClassSessionCreateDialog> {
+  final _dateController = TextEditingController();
+  final _startsAtController = TextEditingController();
+  final _endsAtController = TextEditingController();
+  final _reasonController = TextEditingController();
+  String _status = 'scheduled';
+  String? _errorText;
+
+  @override
+  void dispose() {
+    _dateController.dispose();
+    _startsAtController.dispose();
+    _endsAtController.dispose();
+    _reasonController.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final sessionDate = _dateController.text.trim();
+    final startsAt = _startsAtController.text.trim();
+    final endsAt = _endsAtController.text.trim();
+    if (!_datePattern.hasMatch(sessionDate) ||
+        (startsAt.isNotEmpty && !_timePattern.hasMatch(startsAt)) ||
+        (endsAt.isNotEmpty && !_timePattern.hasMatch(endsAt)) ||
+        ((startsAt.isEmpty) != (endsAt.isEmpty)) ||
+        (startsAt.isNotEmpty && startsAt.compareTo(endsAt) >= 0)) {
+      setState(() => _errorText = '날짜와 시간을 확인해 주세요.');
+      return;
+    }
+    Navigator.of(context).pop(
+      _ClassSessionCreateResult(
+        sessionDate: sessionDate,
+        startsAt: startsAt,
+        endsAt: endsAt,
+        status: _status,
+        reason: _reasonController.text.trim(),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text('${widget.className} 회차 생성'),
+      content: SizedBox(
+        width: 360,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: _dateController,
+              decoration: InputDecoration(
+                labelText: '회차일',
+                hintText: '2026-07-31',
+                errorText: _errorText,
+                border: const OutlineInputBorder(),
+              ),
+              onSubmitted: (_) => _submit(),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _startsAtController,
+                    decoration: const InputDecoration(
+                      labelText: '시작',
+                      hintText: '기본',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: TextField(
+                    controller: _endsAtController,
+                    decoration: const InputDecoration(
+                      labelText: '종료',
+                      hintText: '기본',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<String>(
+              initialValue: _status,
+              decoration: const InputDecoration(
+                labelText: '상태',
+                border: OutlineInputBorder(),
+              ),
+              items: const [
+                DropdownMenuItem(value: 'scheduled', child: Text('예정')),
+                DropdownMenuItem(value: 'open', child: Text('출석 열림')),
+              ],
+              onChanged: (value) {
+                if (value != null) setState(() => _status = value);
+              },
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _reasonController,
+              decoration: const InputDecoration(
+                labelText: '사유',
+                border: OutlineInputBorder(),
+              ),
+              onSubmitted: (_) => _submit(),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('취소'),
+        ),
+        FilledButton(onPressed: _submit, child: const Text('생성')),
+      ],
+    );
+  }
 }
 
 class _ClassCancelDialog extends StatefulWidget {
