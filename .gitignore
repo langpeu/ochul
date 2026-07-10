@@ -21,6 +21,8 @@ coverage/
 .mcp.json
 Secrets.config
 **/Secrets.config
+**/Secrets.dev.config
+**/Secrets.prod.config
 
 # Supabase
 supabase/config.toml
