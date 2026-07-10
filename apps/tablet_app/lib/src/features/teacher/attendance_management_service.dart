@@ -107,6 +107,7 @@ class TeacherAttendanceStudent {
     required this.code,
     required this.name,
     required this.status,
+    required this.avatarKey,
     required this.note,
   });
 
@@ -116,6 +117,7 @@ class TeacherAttendanceStudent {
       code: json['code'] as String? ?? '',
       name: json['name'] as String? ?? '학생',
       status: json['status'] as String? ?? 'waiting',
+      avatarKey: json['avatarKey'] as String? ?? 'elementary_unspecified_01',
       note: json['note'] as String?,
     );
   }
@@ -124,5 +126,6 @@ class TeacherAttendanceStudent {
   final String code;
   final String name;
   final String status;
+  final String avatarKey;
   final String? note;
 }

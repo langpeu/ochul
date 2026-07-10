@@ -4534,9 +4534,17 @@ class _AttendanceManagementPanelState
                                   return ListTile(
                                     dense: true,
                                     contentPadding: EdgeInsets.zero,
-                                    leading: Icon(
-                                      _teacherAttendanceStatusIcon(
-                                        student.status,
+                                    leading: Badge(
+                                      smallSize: 10,
+                                      backgroundColor:
+                                          _teacherAttendanceStatusColor(
+                                            context,
+                                            student.status,
+                                          ),
+                                      child: StudentAvatar(
+                                        name: student.name,
+                                        avatarKey: student.avatarKey,
+                                        radius: 20,
                                       ),
                                     ),
                                     title: Text(student.name),
@@ -5651,14 +5659,15 @@ String _teacherAttendanceStatusLabel(String status) {
   };
 }
 
-IconData _teacherAttendanceStatusIcon(String status) {
+Color _teacherAttendanceStatusColor(BuildContext context, String status) {
+  final scheme = Theme.of(context).colorScheme;
   return switch (status) {
-    'present' => Icons.check_circle_outline,
-    'late' => Icons.schedule_outlined,
-    'absent' => Icons.cancel_outlined,
-    'excused' => Icons.event_available_outlined,
-    'left_early' => Icons.logout_outlined,
-    _ => Icons.hourglass_empty_outlined,
+    'present' => scheme.primary,
+    'late' => Colors.orange,
+    'absent' => scheme.error,
+    'excused' => Colors.teal,
+    'left_early' => Colors.deepPurple,
+    _ => scheme.outline,
   };
 }
 
