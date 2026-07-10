@@ -55,6 +55,32 @@ class AttendanceManagementService {
     );
     return AttendanceUpdateResult.fromJson(data);
   }
+
+  Future<TeacherAttendanceSession> updateSession({
+    required String classSessionId,
+    required String sessionDate,
+    required String startsAt,
+    required String endsAt,
+    required String status,
+    required String reason,
+  }) async {
+    final data = await edgeClient.call(
+      '/class-sessions/$classSessionId',
+      method: EdgeHttpMethod.patch,
+      body: <String, dynamic>{
+        'sessionDate': sessionDate,
+        'startsAt': startsAt,
+        'endsAt': endsAt,
+        'status': status,
+        if (reason.isNotEmpty) 'reason': reason,
+      },
+    );
+    final sessionJson = data['session'];
+    if (sessionJson is Map<String, dynamic>) {
+      return TeacherAttendanceSession.fromJson(sessionJson);
+    }
+    throw const AttendanceManagementException('수업 회차 수정 응답이 올바르지 않습니다.');
+  }
 }
 
 class AttendanceUpdateResult {
@@ -78,7 +104,11 @@ class TeacherAttendanceSession {
     required this.id,
     required this.classId,
     required this.className,
+    required this.sessionDate,
     required this.scheduleText,
+    required this.startsAt,
+    required this.endsAt,
+    required this.status,
   });
 
   factory TeacherAttendanceSession.fromJson(Map<String, dynamic> json) {
@@ -86,14 +116,22 @@ class TeacherAttendanceSession {
       id: json['id'] as String? ?? '',
       classId: json['classId'] as String? ?? '',
       className: json['className'] as String? ?? '수업',
+      sessionDate: json['sessionDate'] as String? ?? '',
       scheduleText: json['scheduleText'] as String? ?? '',
+      startsAt: json['startsAt'] as String? ?? '',
+      endsAt: json['endsAt'] as String? ?? '',
+      status: json['status'] as String? ?? 'open',
     );
   }
 
   final String id;
   final String classId;
   final String className;
+  final String sessionDate;
   final String scheduleText;
+  final String startsAt;
+  final String endsAt;
+  final String status;
 }
 
 class TeacherAttendanceData {
@@ -144,4 +182,13 @@ class TeacherAttendanceStudent {
   final String status;
   final String avatarKey;
   final String? note;
+}
+
+class AttendanceManagementException implements Exception {
+  const AttendanceManagementException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
 }

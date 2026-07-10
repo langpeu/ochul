@@ -2055,6 +2055,165 @@ class _ClassSessionCreateDialogState extends State<_ClassSessionCreateDialog> {
   }
 }
 
+class _ClassSessionEditResult {
+  const _ClassSessionEditResult({
+    required this.sessionDate,
+    required this.startsAt,
+    required this.endsAt,
+    required this.status,
+    required this.reason,
+  });
+
+  final String sessionDate;
+  final String startsAt;
+  final String endsAt;
+  final String status;
+  final String reason;
+}
+
+class _ClassSessionEditDialog extends StatefulWidget {
+  const _ClassSessionEditDialog({required this.session});
+
+  final TeacherAttendanceSession session;
+
+  @override
+  State<_ClassSessionEditDialog> createState() =>
+      _ClassSessionEditDialogState();
+}
+
+class _ClassSessionEditDialogState extends State<_ClassSessionEditDialog> {
+  late final TextEditingController _dateController;
+  late final TextEditingController _startsAtController;
+  late final TextEditingController _endsAtController;
+  final _reasonController = TextEditingController();
+  late String _status;
+  String? _errorText;
+
+  @override
+  void initState() {
+    super.initState();
+    _dateController = TextEditingController(text: widget.session.sessionDate);
+    _startsAtController = TextEditingController(
+      text: _timeOfDayFromIso(widget.session.startsAt),
+    );
+    _endsAtController = TextEditingController(
+      text: _timeOfDayFromIso(widget.session.endsAt),
+    );
+    _status = widget.session.status;
+  }
+
+  @override
+  void dispose() {
+    _dateController.dispose();
+    _startsAtController.dispose();
+    _endsAtController.dispose();
+    _reasonController.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final sessionDate = _dateController.text.trim();
+    final startsAt = _startsAtController.text.trim();
+    final endsAt = _endsAtController.text.trim();
+    if (!_datePattern.hasMatch(sessionDate) ||
+        !_timePattern.hasMatch(startsAt) ||
+        !_timePattern.hasMatch(endsAt) ||
+        startsAt.compareTo(endsAt) >= 0) {
+      setState(() => _errorText = '날짜와 시간을 확인해 주세요.');
+      return;
+    }
+    Navigator.of(context).pop(
+      _ClassSessionEditResult(
+        sessionDate: sessionDate,
+        startsAt: startsAt,
+        endsAt: endsAt,
+        status: _status,
+        reason: _reasonController.text.trim(),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text('${widget.session.className} 회차 수정'),
+      content: SizedBox(
+        width: 360,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: _dateController,
+              decoration: InputDecoration(
+                labelText: '회차일',
+                errorText: _errorText,
+                border: const OutlineInputBorder(),
+              ),
+              onSubmitted: (_) => _submit(),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _startsAtController,
+                    decoration: const InputDecoration(
+                      labelText: '시작',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: TextField(
+                    controller: _endsAtController,
+                    decoration: const InputDecoration(
+                      labelText: '종료',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<String>(
+              initialValue: _status,
+              decoration: const InputDecoration(
+                labelText: '상태',
+                border: OutlineInputBorder(),
+              ),
+              items: const [
+                DropdownMenuItem(value: 'open', child: Text('출석 열림')),
+                DropdownMenuItem(value: 'completed', child: Text('완료')),
+                DropdownMenuItem(value: 'cancelled', child: Text('취소')),
+              ],
+              onChanged: (value) {
+                if (value != null) setState(() => _status = value);
+              },
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _reasonController,
+              decoration: const InputDecoration(
+                labelText: '변경 사유',
+                border: OutlineInputBorder(),
+              ),
+              onSubmitted: (_) => _submit(),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('취소'),
+        ),
+        FilledButton(onPressed: _submit, child: const Text('저장')),
+      ],
+    );
+  }
+}
+
 class _ClassCancelDialog extends StatefulWidget {
   const _ClassCancelDialog({required this.className});
 
@@ -4609,6 +4768,7 @@ class _AttendanceManagementPanelState
   late Future<_TeacherAttendancePanelData> _dataFuture;
   String? _selectedSessionId;
   String? _processingStudentId;
+  var _processingSession = false;
 
   @override
   void initState() {
@@ -4674,6 +4834,40 @@ class _AttendanceManagementPanelState
     }
   }
 
+  Future<void> _editSelectedSession(TeacherAttendanceSession session) async {
+    final result = await showDialog<_ClassSessionEditResult>(
+      context: context,
+      builder: (context) => _ClassSessionEditDialog(session: session),
+    );
+    if (result == null) return;
+
+    setState(() => _processingSession = true);
+    try {
+      await widget.service.updateSession(
+        classSessionId: session.id,
+        sessionDate: result.sessionDate,
+        startsAt: result.startsAt,
+        endsAt: result.endsAt,
+        status: result.status,
+        reason: result.reason,
+      );
+      if (mounted) {
+        setState(() => _dataFuture = _loadData());
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('수업 회차를 수정했습니다.')));
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('수업 회차 수정에 실패했습니다.')));
+      }
+    } finally {
+      if (mounted) setState(() => _processingSession = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Card(
@@ -4701,30 +4895,56 @@ class _AttendanceManagementPanelState
                   final students =
                       data.attendance?.students ??
                       const <TeacherAttendanceStudent>[];
+                  final selectedSession = data.sessions
+                      .where((session) => session.id == _selectedSessionId)
+                      .firstOrNull;
                   return Column(
                     children: [
-                      DropdownButtonFormField<String>(
-                        initialValue: _selectedSessionId,
-                        decoration: const InputDecoration(
-                          labelText: '수업 회차',
-                          border: OutlineInputBorder(),
-                        ),
-                        items: [
-                          for (final session in data.sessions)
-                            DropdownMenuItem(
-                              value: session.id,
-                              child: Text(
-                                '${session.className} · ${session.scheduleText}',
+                      Row(
+                        children: [
+                          Expanded(
+                            child: DropdownButtonFormField<String>(
+                              initialValue: _selectedSessionId,
+                              decoration: const InputDecoration(
+                                labelText: '수업 회차',
+                                border: OutlineInputBorder(),
                               ),
+                              items: [
+                                for (final session in data.sessions)
+                                  DropdownMenuItem(
+                                    value: session.id,
+                                    child: Text(
+                                      '${session.className} · ${session.scheduleText}',
+                                    ),
+                                  ),
+                              ],
+                              onChanged: (sessionId) {
+                                if (sessionId == null) return;
+                                setState(() {
+                                  _selectedSessionId = sessionId;
+                                  _dataFuture = _loadData();
+                                });
+                              },
                             ),
+                          ),
+                          const SizedBox(width: 8),
+                          IconButton.filledTonal(
+                            tooltip: '회차 수정',
+                            onPressed:
+                                _processingSession || selectedSession == null
+                                ? null
+                                : () => _editSelectedSession(selectedSession),
+                            icon: _processingSession
+                                ? const SizedBox(
+                                    width: 18,
+                                    height: 18,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : const Icon(Icons.edit_calendar_outlined),
+                          ),
                         ],
-                        onChanged: (sessionId) {
-                          if (sessionId == null) return;
-                          setState(() {
-                            _selectedSessionId = sessionId;
-                            _dataFuture = _loadData();
-                          });
-                        },
                       ),
                       const SizedBox(height: 8),
                       Expanded(
@@ -5781,6 +6001,11 @@ class _HistoryFilterBar extends StatelessWidget {
 const _dayLabels = ['일', '월', '화', '수', '목', '금', '토'];
 final _datePattern = RegExp(r'^\d{4}-\d{2}-\d{2}$');
 final _timePattern = RegExp(r'^\d{2}:\d{2}$');
+
+String _timeOfDayFromIso(String value) {
+  final match = RegExp(r'T(\d{2}:\d{2})').firstMatch(value);
+  return match?.group(1) ?? (value.length >= 5 ? value.substring(0, 5) : value);
+}
 
 String _classKindLabel(String classKind) {
   return switch (classKind) {

@@ -2183,9 +2183,11 @@ async function listTodayAttendance(
       classId: session.class_id,
       className: normalizeJoinedObject(session.classes).name,
       classKind: normalizeJoinedObject(session.classes).class_kind,
+      sessionDate: session.session_date,
       scheduleText: normalizeJoinedObject(session.classes).schedule_text,
       startsAt: session.starts_at,
       endsAt: session.ends_at,
+      status: session.status,
       layout: await readAttendanceClassroomLayout(
         db,
         session.class_id,
