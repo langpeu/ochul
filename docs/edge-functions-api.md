@@ -26,69 +26,87 @@ Flutter 앱은 Supabase DB를 직접 호출하지 않는다.
 
 ## Edge Function 그룹
 
+Edge Function 이름은 REST 스타일로 간결하고 명확하게 둔다.
+
 ### auth/profile
 
-- 내 선생님 프로필 조회
-- 공부방 목록 조회
-- 관리자 여부 조회
+- `GET /me`: 내 선생님 프로필, 권한, 공부방 목록
 
 ### study-rooms
 
-- 공부방 생성/수정
-- 공부방 선택
-- 공부방 기본 설정 조회
+- `GET /study-rooms`: 공부방 목록
+- `POST /study-rooms`: 공부방 생성
+- `GET /study-rooms/{studyRoomId}`: 공부방 상세
+- `PATCH /study-rooms/{studyRoomId}`: 공부방 수정
 
 ### students
 
-- 학생 목록 조회
-- 학생 생성/수정/삭제
-- 보호자 연결 관리
-- 학생 출석 비밀번호 변경
+- `GET /study-rooms/{studyRoomId}/students`: 학생 목록
+- `POST /study-rooms/{studyRoomId}/students`: 학생 생성
+- `GET /students/{studentId}`: 학생 상세
+- `PATCH /students/{studentId}`: 학생 수정
+- `DELETE /students/{studentId}`: 학생 삭제 또는 비활성화
+- `POST /students/{studentId}/pin/reset`: 학생 출결 비밀번호 리셋
+- `PUT /students/{studentId}/guardians`: 보호자 연결 저장
 
 ### classes
 
-- 수업 목록 조회
-- 수업 생성/수정/삭제
-- 수업 요일/기간/시간 관리
-- 보강/휴강/시간 변경 관리
+- `GET /study-rooms/{studyRoomId}/classes`: 수업 목록
+- `POST /study-rooms/{studyRoomId}/classes`: 수업 생성
+- `GET /classes/{classId}`: 수업 상세
+- `PATCH /classes/{classId}`: 수업 수정
+- `DELETE /classes/{classId}`: 수업 삭제 또는 비활성화
+- `POST /classes/{classId}/sessions`: 수업 회차 생성
+- `PATCH /class-sessions/{classSessionId}`: 수업 회차 수정
+- `POST /class-sessions/{classSessionId}/cancel`: 휴강 처리
+- `POST /class-sessions/{classSessionId}/makeup`: 보강 수업 생성
+
+### classroom-layouts
+
+- `GET /classes/{classId}/classroom-layout`: 수업별 교실 배치 조회
+- `PUT /classes/{classId}/classroom-layout`: 책상/의자 배치 저장
+- `PUT /classes/{classId}/seat-assignments`: 학생 좌석 사전 배정 저장
+- `POST /classes/{classId}/classroom-layout/copy`: 기본 수업 배치도를 보강 수업으로 복사
 
 ### enrollments
 
-- 수업별 학생 등록
-- 드래그앤드롭 순서 저장
-- 기본 수업/보강 수업 등록 구분
+- `GET /classes/{classId}/students`: 수업 등록 학생 목록
+- `PUT /classes/{classId}/students`: 수업 등록 학생 저장
+- `PATCH /classes/{classId}/students/order`: 드래그앤드롭 순서 저장
 
 ### attendance
 
-- 오늘 수업 목록 조회
-- 수업별 학생 출석 상태 조회
-- 학생 비밀번호 출석 체크
-- 선생님 수동 출결 수정
+- `GET /attendance/today`: 오늘 수업 목록
+- `GET /class-sessions/{classSessionId}/attendance`: 수업별 출석 상태
+- `POST /class-sessions/{classSessionId}/check-in`: 학생 6자리 비밀번호 출석 체크
+- `POST /class-sessions/{classSessionId}/seat-check-in`: 학생 아바타 좌석 드래그앤드롭 출석 체크
+- `PATCH /attendance-records/{attendanceRecordId}`: 선생님 수동 출결 수정
 
 ### payments
 
-- 납부 기간 조회
-- 학생별 납부 상태 조회
-- 납부 상태 변경
-- 미납 안내 대상 조회
+- `GET /study-rooms/{studyRoomId}/payment-periods`: 납부 기간 목록
+- `POST /study-rooms/{studyRoomId}/payment-periods`: 납부 기간 생성
+- `GET /payment-periods/{paymentPeriodId}/statuses`: 학생별 납부 상태
+- `PATCH /payment-statuses/{paymentStatusId}`: 납부 상태 변경
+- `GET /payment-periods/{paymentPeriodId}/unpaid`: 미납 안내 대상
 
 ### notifications
 
-- 카카오 발송 요청
-- 카카오 발송 이력 조회
-- 실패 건 재발송
+- `GET /study-rooms/{studyRoomId}/notifications`: 카카오 발송 이력
+- `POST /notifications`: 카카오 발송 요청
+- `POST /notifications/{notificationId}/resend`: 실패 건 재발송
 
 ### audit-logs
 
-- 사용 히스토리 조회
-- 유형, 기간, 선생님, 공부방, 학생, 수업, 발송 상태 필터링
+- `GET /study-rooms/{studyRoomId}/audit-logs`: 사용 히스토리
+- Query filter: `type`, `from`, `to`, `teacherId`, `studentId`, `classId`, `notificationStatus`
 
 ### admin
 
-- 선생님 목록 조회
-- 선생님별 공부방 조회
-- 공부방별 학생 조회
-- 선생님별/공부방별 히스토리 조회
+- `GET /admin/teachers`: 선생님 목록
+- `GET /admin/teachers/{teacherId}/study-rooms`: 선생님별 공부방
+- `GET /admin/study-rooms/{studyRoomId}/students`: 공부방별 학생
+- `GET /admin/study-rooms/{studyRoomId}/audit-logs`: 공부방별 히스토리
 
 ## Edge Function 공통 처리
 

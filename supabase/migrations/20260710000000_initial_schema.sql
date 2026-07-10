@@ -14,6 +14,18 @@ create type student_status as enum (
   'left'
 );
 
+create type student_gender as enum (
+  'male',
+  'female',
+  'unspecified'
+);
+
+create type student_age_group as enum (
+  'elementary',
+  'middle',
+  'high'
+);
+
 create type payment_status as enum (
   'unpaid',
   'paid',
@@ -67,6 +79,9 @@ create type audit_entity_type as enum (
   'class',
   'class_schedule',
   'class_student',
+  'classroom_layout',
+  'classroom_seat',
+  'student_seat_assignment',
   'class_session',
   'attendance',
   'payment',
@@ -136,6 +151,10 @@ create table students (
   student_code text not null,
   name text not null,
   pin_hash text not null,
+  pin_reset_required boolean not null default false,
+  gender student_gender not null default 'unspecified',
+  age_group student_age_group not null default 'elementary',
+  avatar_key text not null default 'elementary_unspecified_01',
   status student_status not null default 'active',
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
@@ -149,6 +168,11 @@ create table guardians (
   name text,
   phone text not null,
   kakao_opt_in boolean not null default true,
+  consent_confirmed_at timestamptz,
+  consent_method text,
+  consent_confirmed_by_teacher_id uuid references teachers(id) on delete set null,
+  opt_out_at timestamptz,
+  deleted_at timestamptz,
   created_at timestamptz not null default now()
 );
 
@@ -201,6 +225,49 @@ create table class_students (
   primary key (class_id, student_id)
 );
 
+create table classroom_layouts (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references organizations(id) on delete cascade,
+  study_room_id uuid not null references study_rooms(id) on delete cascade,
+  class_id uuid not null references classes(id) on delete cascade,
+  name text not null default '기본 배치',
+  canvas_width numeric(8, 2) not null default 1000,
+  canvas_height numeric(8, 2) not null default 700,
+  version integer not null default 1,
+  active boolean not null default true,
+  created_by_teacher_id uuid references teachers(id) on delete set null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table classroom_seats (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references organizations(id) on delete cascade,
+  study_room_id uuid not null references study_rooms(id) on delete cascade,
+  classroom_layout_id uuid not null references classroom_layouts(id) on delete cascade,
+  label text,
+  desk_x numeric(8, 4) not null,
+  desk_y numeric(8, 4) not null,
+  seat_x numeric(8, 4) not null,
+  seat_y numeric(8, 4) not null,
+  rotation_degrees numeric(6, 2) not null default 0,
+  display_order integer not null default 0,
+  active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table student_seat_assignments (
+  classroom_layout_id uuid not null references classroom_layouts(id) on delete cascade,
+  classroom_seat_id uuid not null references classroom_seats(id) on delete cascade,
+  student_id uuid not null references students(id) on delete cascade,
+  assigned_by_teacher_id uuid references teachers(id) on delete set null,
+  assigned_at timestamptz not null default now(),
+  active boolean not null default true,
+  primary key (classroom_layout_id, student_id),
+  unique (classroom_layout_id, classroom_seat_id)
+);
+
 create table class_sessions (
   id uuid primary key default gen_random_uuid(),
   organization_id uuid not null references organizations(id) on delete cascade,
@@ -244,6 +311,7 @@ create table attendance_records (
   study_room_id uuid not null references study_rooms(id) on delete cascade,
   class_session_id uuid not null references class_sessions(id) on delete cascade,
   student_id uuid not null references students(id) on delete cascade,
+  classroom_seat_id uuid references classroom_seats(id) on delete set null,
   status attendance_status not null,
   checked_in_at timestamptz,
   checked_in_method text not null default 'student_pin',
@@ -290,7 +358,7 @@ create table notification_logs (
   attendance_record_id uuid references attendance_records(id) on delete set null,
   event_type text not null,
   channel text not null default 'kakao',
-  recipient_phone text not null,
+  recipient_phone_masked text not null,
   student_name text,
   class_name text,
   event_time timestamptz,
@@ -313,6 +381,8 @@ create table audit_logs (
   student_id uuid references students(id) on delete set null,
   class_id uuid references classes(id) on delete set null,
   class_session_id uuid references class_sessions(id) on delete set null,
+  classroom_layout_id uuid references classroom_layouts(id) on delete set null,
+  classroom_seat_id uuid references classroom_seats(id) on delete set null,
   notification_log_id uuid references notification_logs(id) on delete set null,
   entity_type audit_entity_type not null,
   entity_id uuid not null,
@@ -333,6 +403,10 @@ create index idx_student_guardians_guardian on student_guardians(guardian_id);
 create index idx_classes_organization on classes(organization_id);
 create index idx_classes_study_room on classes(study_room_id);
 create index idx_class_schedules_class on class_schedules(class_id);
+create index idx_classroom_layouts_class on classroom_layouts(class_id, active);
+create index idx_classroom_layouts_study_room on classroom_layouts(study_room_id, created_at desc);
+create index idx_classroom_seats_layout on classroom_seats(classroom_layout_id, active, display_order);
+create index idx_student_seat_assignments_student on student_seat_assignments(student_id);
 create index idx_class_sessions_class_date on class_sessions(class_id, session_date);
 create index idx_class_sessions_study_room on class_sessions(study_room_id, session_date);
 create index idx_class_sessions_status on class_sessions(status, starts_at);
@@ -340,6 +414,10 @@ create index idx_class_session_changes_session on class_session_changes(class_se
 create index idx_class_session_changes_study_room on class_session_changes(study_room_id, created_at desc);
 create index idx_attendance_session on attendance_records(class_session_id);
 create index idx_attendance_study_room on attendance_records(study_room_id, created_at desc);
+create index idx_attendance_seat on attendance_records(classroom_seat_id, created_at desc);
+create unique index idx_attendance_unique_session_seat
+  on attendance_records(class_session_id, classroom_seat_id)
+  where classroom_seat_id is not null;
 create index idx_payment_period_student on payment_statuses(payment_period_id, student_id);
 create index idx_payment_periods_study_room on payment_periods(study_room_id, due_date);
 create index idx_payment_statuses_study_room on payment_statuses(study_room_id, created_at desc);
@@ -354,6 +432,8 @@ create index idx_audit_logs_actor on audit_logs(actor_teacher_id, created_at des
 create index idx_audit_logs_entity on audit_logs(entity_type, action, created_at desc);
 create index idx_audit_logs_student on audit_logs(student_id, created_at desc);
 create index idx_audit_logs_class on audit_logs(class_id, created_at desc);
+create index idx_audit_logs_layout on audit_logs(classroom_layout_id, created_at desc);
+create index idx_audit_logs_seat on audit_logs(classroom_seat_id, created_at desc);
 create index idx_audit_logs_notification on audit_logs(notification_log_id, created_at desc);
 
 alter table organizations enable row level security;
@@ -364,6 +444,9 @@ alter table student_guardians enable row level security;
 alter table classes enable row level security;
 alter table class_schedules enable row level security;
 alter table class_students enable row level security;
+alter table classroom_layouts enable row level security;
+alter table classroom_seats enable row level security;
+alter table student_seat_assignments enable row level security;
 alter table class_sessions enable row level security;
 alter table class_session_changes enable row level security;
 alter table attendance_records enable row level security;
@@ -569,6 +652,51 @@ with check (
 
 create policy "admins can read class students"
 on class_students for select
+using (is_admin_teacher());
+
+create policy "owner can access own classroom layouts"
+on classroom_layouts for all
+using (owns_study_room(study_room_id))
+with check (owns_study_room(study_room_id));
+
+create policy "admins can read classroom layouts"
+on classroom_layouts for select
+using (is_admin_teacher());
+
+create policy "owner can access own classroom seats"
+on classroom_seats for all
+using (owns_study_room(study_room_id))
+with check (owns_study_room(study_room_id));
+
+create policy "admins can read classroom seats"
+on classroom_seats for select
+using (is_admin_teacher());
+
+create policy "owner can access own student seat assignments"
+on student_seat_assignments for all
+using (
+  exists (
+    select 1
+    from classroom_layouts cl
+    where cl.id = student_seat_assignments.classroom_layout_id
+      and owns_study_room(cl.study_room_id)
+  )
+)
+with check (
+  exists (
+    select 1
+    from classroom_layouts cl
+    join classroom_seats cs on cs.id = student_seat_assignments.classroom_seat_id
+    join students s on s.id = student_seat_assignments.student_id
+    where cl.id = student_seat_assignments.classroom_layout_id
+      and owns_study_room(cl.study_room_id)
+      and cs.study_room_id = cl.study_room_id
+      and s.study_room_id = cl.study_room_id
+  )
+);
+
+create policy "admins can read student seat assignments"
+on student_seat_assignments for select
 using (is_admin_teacher());
 
 create policy "owner can access own class sessions"

@@ -146,7 +146,7 @@ class _PinDialog extends StatelessWidget {
         obscureText: true,
         keyboardType: TextInputType.number,
         decoration: InputDecoration(
-          labelText: '비밀번호',
+          labelText: '6자리 비밀번호',
           border: OutlineInputBorder(),
         ),
       ),
