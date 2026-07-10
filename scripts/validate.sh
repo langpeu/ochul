@@ -40,6 +40,9 @@ git check-ignore -v apps/tablet_app/Secrets.prod.config >/dev/null
 git check-ignore -v supabase/functions/.env >/dev/null
 git check-ignore -v supabase/config.toml >/dev/null
 
+echo "Checking Flutter Secrets allowlist..."
+scripts/check-flutter-secrets.sh
+
 echo "Checking Flutter direct DB access guard..."
 if rg -n "\.from\(|\.rpc\(|Postgrest|select\(|insert\(|update\(" \
   apps/tablet_app/lib apps/tablet_app/test; then

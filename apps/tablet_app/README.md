@@ -16,6 +16,15 @@ cp Secrets.dev.example.config Secrets.dev.config
 flutter run --dart-define-from-file=Secrets.dev.config
 ```
 
+앱용 Secrets 파일에는 다음 client-safe 값만 넣습니다.
+
+- `SUPABASE_URL`
+- `SUPABASE_ANON_KEY` 또는 `SUPABASE_PUBLISHABLE_KEY`
+- `AUTH_REDIRECT_URL`
+- `APP_ENV`
+
+`SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_SECRET_KEY`, `SUPABASE_JWKS_URL` 같은 서버용 값은 Flutter 앱용 Secrets 파일에 넣지 않습니다. 서버용 값은 Supabase Edge Function secret 또는 `supabase/functions/.env` 로컬 파일에만 둡니다.
+
 Supabase Auth provider 설정의 redirect URL에는 다음 값을 허용해야 합니다.
 
 ```text
