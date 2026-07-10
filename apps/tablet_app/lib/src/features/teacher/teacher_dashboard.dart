@@ -8,6 +8,7 @@ import 'admin_management_service.dart';
 import 'audit_log_service.dart';
 import 'class_management_service.dart';
 import 'enrollment_management_service.dart';
+import 'payment_management_service.dart';
 import 'student_management_service.dart';
 import 'teacher_home_service.dart';
 
@@ -39,6 +40,9 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
     edgeClient: EdgeFunctionClient(),
   );
   final _adminService = const AdminManagementService(
+    edgeClient: EdgeFunctionClient(),
+  );
+  final _paymentService = const PaymentManagementService(
     edgeClient: EdgeFunctionClient(),
   );
 
@@ -85,6 +89,7 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
               enrollmentService: _enrollmentService,
               auditLogService: _auditLogService,
               adminService: _adminService,
+              paymentService: _paymentService,
             ),
           ),
         ],
@@ -102,6 +107,7 @@ class _TeacherBoardContent extends StatelessWidget {
     required this.enrollmentService,
     required this.auditLogService,
     required this.adminService,
+    required this.paymentService,
   });
 
   final AppConfig config;
@@ -111,6 +117,7 @@ class _TeacherBoardContent extends StatelessWidget {
   final EnrollmentManagementService enrollmentService;
   final AuditLogService auditLogService;
   final AdminManagementService adminService;
+  final PaymentManagementService paymentService;
 
   @override
   Widget build(BuildContext context) {
@@ -178,9 +185,22 @@ class _TeacherBoardContent extends StatelessWidget {
             Expanded(
               child: studyRoom == null
                   ? const _EmptyStudyRoomPanel()
-                  : _AuditHistoryPanel(
-                      studyRoom: studyRoom,
-                      service: auditLogService,
+                  : Column(
+                      children: [
+                        Expanded(
+                          child: _PaymentManagementPanel(
+                            studyRoom: studyRoom,
+                            service: paymentService,
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        Expanded(
+                          child: _AuditHistoryPanel(
+                            studyRoom: studyRoom,
+                            service: auditLogService,
+                          ),
+                        ),
+                      ],
                     ),
             ),
           ],
@@ -1908,6 +1928,334 @@ class _EmptyStudyRoomPanel extends StatelessWidget {
   }
 }
 
+class _PaymentManagementPanel extends StatefulWidget {
+  const _PaymentManagementPanel({
+    required this.studyRoom,
+    required this.service,
+  });
+
+  final StudyRoomSummary studyRoom;
+  final PaymentManagementService service;
+
+  @override
+  State<_PaymentManagementPanel> createState() =>
+      _PaymentManagementPanelState();
+}
+
+class _PaymentManagementPanelState extends State<_PaymentManagementPanel> {
+  late Future<_PaymentPanelData> _dataFuture;
+  final _nameController = TextEditingController();
+  final _dueDateController = TextEditingController();
+  final _amountController = TextEditingController(text: '0');
+  String? _selectedPeriodId;
+  String? _errorText;
+  var _submitting = false;
+  String? _processingStatusId;
+  var _notifying = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _dataFuture = _loadData();
+  }
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _dueDateController.dispose();
+    _amountController.dispose();
+    super.dispose();
+  }
+
+  Future<_PaymentPanelData> _loadData() async {
+    final periods = await widget.service.fetchPeriods(widget.studyRoom.id);
+    final periodId = _selectedPeriodId ?? periods.firstOrNull?.id;
+    final effectivePeriodId = periods.any((period) => period.id == periodId)
+        ? periodId
+        : periods.firstOrNull?.id;
+    final statusData = effectivePeriodId == null
+        ? null
+        : await widget.service.fetchStatuses(effectivePeriodId);
+    _selectedPeriodId = effectivePeriodId;
+    return _PaymentPanelData(periods: periods, statusData: statusData);
+  }
+
+  Future<void> _refresh() async {
+    setState(() => _dataFuture = _loadData());
+  }
+
+  Future<void> _createPeriod() async {
+    final name = _nameController.text.trim();
+    final dueDate = _dueDateController.text.trim();
+    final amount = int.tryParse(_amountController.text.trim()) ?? -1;
+    if (name.length < 2 || !_datePattern.hasMatch(dueDate) || amount < 0) {
+      setState(() => _errorText = '기간명, 마감일, 금액을 확인해 주세요.');
+      return;
+    }
+
+    setState(() {
+      _errorText = null;
+      _submitting = true;
+    });
+    try {
+      final period = await widget.service.createPeriod(
+        studyRoomId: widget.studyRoom.id,
+        name: name,
+        dueDate: dueDate,
+        amount: amount,
+      );
+      _nameController.clear();
+      _dueDateController.clear();
+      if (mounted) {
+        setState(() {
+          _selectedPeriodId = period.id;
+          _dataFuture = _loadData();
+        });
+      }
+    } catch (_) {
+      if (mounted) setState(() => _errorText = '납부 기간 생성에 실패했습니다.');
+    } finally {
+      if (mounted) setState(() => _submitting = false);
+    }
+  }
+
+  Future<void> _updateStatus(PaymentStatusSummary status, String next) async {
+    setState(() => _processingStatusId = status.id);
+    try {
+      await widget.service.updateStatus(
+        paymentStatusId: status.id,
+        status: next,
+        note: '',
+      );
+      if (mounted) await _refresh();
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('납부 상태 변경에 실패했습니다.')));
+      }
+    } finally {
+      if (mounted) setState(() => _processingStatusId = null);
+    }
+  }
+
+  Future<void> _notifyUnpaid() async {
+    final periodId = _selectedPeriodId;
+    if (periodId == null) return;
+    setState(() => _notifying = true);
+    try {
+      final count = await widget.service.notifyUnpaid(periodId);
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('미납 안내 $count건을 요청했습니다.')));
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('미납 안내 요청에 실패했습니다.')));
+      }
+    } finally {
+      if (mounted) setState(() => _notifying = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('납부 관리', style: Theme.of(context).textTheme.titleLarge),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                SizedBox(
+                  width: 116,
+                  child: TextField(
+                    controller: _nameController,
+                    enabled: !_submitting,
+                    decoration: const InputDecoration(
+                      labelText: '기간명',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+                SizedBox(
+                  width: 126,
+                  child: TextField(
+                    controller: _dueDateController,
+                    enabled: !_submitting,
+                    decoration: InputDecoration(
+                      labelText: '마감일',
+                      hintText: '2026-07-31',
+                      errorText: _errorText,
+                      border: const OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+                SizedBox(
+                  width: 96,
+                  child: TextField(
+                    controller: _amountController,
+                    enabled: !_submitting,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: '금액',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+                FilledButton.icon(
+                  onPressed: _submitting ? null : _createPeriod,
+                  icon: const Icon(Icons.add),
+                  label: Text(_submitting ? '생성 중' : '생성'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Expanded(
+              child: FutureBuilder<_PaymentPanelData>(
+                future: _dataFuture,
+                builder: (context, snapshot) {
+                  if (snapshot.connectionState != ConnectionState.done) {
+                    return const Center(child: CircularProgressIndicator());
+                  }
+                  if (snapshot.hasError) {
+                    return Text('납부 정보를 불러오지 못했습니다. ${snapshot.error}');
+                  }
+                  final data = snapshot.requireData;
+                  if (data.periods.isEmpty) {
+                    return const Center(child: Text('등록된 납부 기간이 없습니다.'));
+                  }
+                  final statuses =
+                      data.statusData?.statuses ??
+                      const <PaymentStatusSummary>[];
+                  return Column(
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: DropdownButtonFormField<String>(
+                              initialValue: _selectedPeriodId,
+                              decoration: const InputDecoration(
+                                labelText: '납부 기간',
+                                border: OutlineInputBorder(),
+                              ),
+                              items: [
+                                for (final period in data.periods)
+                                  DropdownMenuItem(
+                                    value: period.id,
+                                    child: Text(
+                                      '${period.name} · ${period.dueDate}',
+                                    ),
+                                  ),
+                              ],
+                              onChanged: (periodId) {
+                                if (periodId == null) return;
+                                setState(() {
+                                  _selectedPeriodId = periodId;
+                                  _dataFuture = _loadData();
+                                });
+                              },
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          IconButton.filledTonal(
+                            tooltip: '미납 안내 요청',
+                            onPressed: _notifying ? null : _notifyUnpaid,
+                            icon: _notifying
+                                ? const SizedBox(
+                                    width: 18,
+                                    height: 18,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : const Icon(Icons.sms_outlined),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Expanded(
+                        child: statuses.isEmpty
+                            ? const Center(child: Text('납부 대상 학생이 없습니다.'))
+                            : ListView.builder(
+                                itemCount: statuses.length,
+                                itemBuilder: (context, index) {
+                                  final status = statuses[index];
+                                  final processing =
+                                      _processingStatusId == status.id;
+                                  return ListTile(
+                                    dense: true,
+                                    contentPadding: EdgeInsets.zero,
+                                    leading: Icon(
+                                      _paymentStatusIcon(status.status),
+                                    ),
+                                    title: Text(status.studentName),
+                                    subtitle: Text(
+                                      '${status.studentCode} · ${status.amount}원 · ${_paymentStatusLabel(status.status)}',
+                                    ),
+                                    trailing: processing
+                                        ? const SizedBox(
+                                            width: 18,
+                                            height: 18,
+                                            child: CircularProgressIndicator(
+                                              strokeWidth: 2,
+                                            ),
+                                          )
+                                        : PopupMenuButton<String>(
+                                            tooltip: '납부 상태 변경',
+                                            icon: const Icon(Icons.more_vert),
+                                            onSelected: (next) =>
+                                                _updateStatus(status, next),
+                                            itemBuilder: (context) => const [
+                                              PopupMenuItem(
+                                                value: 'unpaid',
+                                                child: Text('미납'),
+                                              ),
+                                              PopupMenuItem(
+                                                value: 'partial',
+                                                child: Text('부분납'),
+                                              ),
+                                              PopupMenuItem(
+                                                value: 'paid',
+                                                child: Text('완납'),
+                                              ),
+                                              PopupMenuItem(
+                                                value: 'exempt',
+                                                child: Text('면제'),
+                                              ),
+                                            ],
+                                          ),
+                                  );
+                                },
+                              ),
+                      ),
+                    ],
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _PaymentPanelData {
+  const _PaymentPanelData({required this.periods, required this.statusData});
+
+  final List<PaymentPeriodSummary> periods;
+  final PaymentStatusData? statusData;
+}
+
 class _SampleAuditPanel extends StatelessWidget {
   const _SampleAuditPanel();
 
@@ -2076,6 +2424,25 @@ String _studentStatusLabel(String status) {
     'paused' => '일시중지',
     'left' => '퇴원',
     _ => '재원',
+  };
+}
+
+String _paymentStatusLabel(String status) {
+  return switch (status) {
+    'paid' => '완납',
+    'partial' => '부분납',
+    'exempt' => '면제',
+    'refunded' => '환불',
+    _ => '미납',
+  };
+}
+
+IconData _paymentStatusIcon(String status) {
+  return switch (status) {
+    'paid' => Icons.check_circle_outline,
+    'partial' => Icons.timelapse_outlined,
+    'exempt' => Icons.remove_circle_outline,
+    _ => Icons.pending_outlined,
   };
 }
 

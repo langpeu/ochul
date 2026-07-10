@@ -155,6 +155,37 @@ async function routeEdgeRequest(
     return await listAuditLogs(studyRoomAuditLogsMatch[1], body, context);
   }
 
+  const paymentPeriodsMatch = path.match(
+    /^\/study-rooms\/([^/]+)\/payment-periods$/,
+  );
+  if (paymentPeriodsMatch) {
+    if (method === "GET") {
+      return await listPaymentPeriods(paymentPeriodsMatch[1], context);
+    }
+    if (method === "POST") {
+      return await createPaymentPeriod(paymentPeriodsMatch[1], body, context);
+    }
+  }
+
+  const paymentStatusesMatch = path.match(
+    /^\/payment-periods\/([^/]+)\/statuses$/,
+  );
+  if (method === "GET" && paymentStatusesMatch) {
+    return await listPaymentStatuses(paymentStatusesMatch[1], context);
+  }
+
+  const paymentUnpaidMatch = path.match(
+    /^\/payment-periods\/([^/]+)\/unpaid\/notify$/,
+  );
+  if (method === "POST" && paymentUnpaidMatch) {
+    return await notifyUnpaidPayments(paymentUnpaidMatch[1], context);
+  }
+
+  const paymentStatusMatch = path.match(/^\/payment-statuses\/([^/]+)$/);
+  if (method === "PATCH" && paymentStatusMatch) {
+    return await updatePaymentStatus(paymentStatusMatch[1], body, context);
+  }
+
   const classStudentsMatch = path.match(/^\/classes\/([^/]+)\/students$/);
   if (classStudentsMatch) {
     if (method === "GET") {
@@ -929,6 +960,270 @@ async function listAuditLogs(
   };
 }
 
+async function listPaymentPeriods(
+  studyRoomId: string,
+  { db, teacher }: AppContext,
+): Promise<Record<string, unknown>> {
+  const activeTeacher = requireTeacherProfile(teacher);
+  assertUuid(studyRoomId, "공부방 정보가 올바르지 않습니다.");
+  await assertStudyRoomAccess(db, activeTeacher, studyRoomId, {
+    allowAdmin: true,
+  });
+
+  const { data: periods, error } = await db
+    .from("payment_periods")
+    .select("id, name, due_date, created_at")
+    .eq("study_room_id", studyRoomId)
+    .order("due_date", { ascending: false });
+
+  if (error) throw new EdgeApiError(500, "납부 기간 조회에 실패했습니다.");
+
+  return {
+    ok: true,
+    periods: (periods ?? []).map((period) => ({
+      id: period.id,
+      name: period.name,
+      dueDate: period.due_date,
+      createdAt: period.created_at,
+    })),
+  };
+}
+
+async function createPaymentPeriod(
+  studyRoomId: string,
+  body: Record<string, unknown>,
+  { db, teacher }: AppContext,
+): Promise<Record<string, unknown>> {
+  const activeTeacher = requireTeacherProfile(teacher);
+  assertUuid(studyRoomId, "공부방 정보가 올바르지 않습니다.");
+  await assertStudyRoomAccess(db, activeTeacher, studyRoomId, {
+    allowAdmin: false,
+  });
+
+  const name = stringValue(body.name);
+  const dueDate = stringValue(body.dueDate);
+  const amount = normalizeAmount(body.amount);
+  if (name.length < 2) {
+    throw new EdgeApiError(400, "납부 기간명을 입력해 주세요.");
+  }
+  assertDate(dueDate, "납부 마감일이 올바르지 않습니다.");
+
+  const { data: studyRoom, error: studyRoomError } = await db
+    .from("study_rooms")
+    .select("id, organization_id")
+    .eq("id", studyRoomId)
+    .eq("owner_teacher_id", activeTeacher.id)
+    .single();
+
+  if (studyRoomError) {
+    throw new EdgeApiError(500, "공부방 조회에 실패했습니다.");
+  }
+
+  const { data: period, error: periodError } = await db
+    .from("payment_periods")
+    .insert({
+      organization_id: studyRoom.organization_id,
+      study_room_id: studyRoomId,
+      name,
+      due_date: dueDate,
+    })
+    .select("id, name, due_date, created_at")
+    .single();
+
+  if (periodError) {
+    throw new EdgeApiError(500, "납부 기간 생성에 실패했습니다.");
+  }
+
+  const { data: students, error: studentError } = await db
+    .from("students")
+    .select("id")
+    .eq("study_room_id", studyRoomId)
+    .eq("status", "active");
+
+  if (studentError) {
+    throw new EdgeApiError(500, "납부 대상 학생 조회에 실패했습니다.");
+  }
+
+  const statusRows = (students ?? []).map((student) => ({
+    organization_id: studyRoom.organization_id,
+    study_room_id: studyRoomId,
+    payment_period_id: period.id,
+    student_id: student.id,
+    amount,
+    status: "unpaid",
+  }));
+  if (statusRows.length > 0) {
+    const { error: statusError } = await db
+      .from("payment_statuses")
+      .insert(statusRows);
+    if (statusError) {
+      throw new EdgeApiError(500, "학생별 납부 상태 생성에 실패했습니다.");
+    }
+  }
+
+  await createPaymentAuditLog(db, {
+    organizationId: studyRoom.organization_id,
+    studyRoomId,
+    actorTeacherId: activeTeacher.id,
+    entityId: period.id,
+    action: "created",
+    title: "납부 기간 생성",
+    summary: `${name} 납부 기간을 생성했습니다.`,
+  });
+
+  return {
+    ok: true,
+    period: {
+      id: period.id,
+      name: period.name,
+      dueDate: period.due_date,
+      createdAt: period.created_at,
+    },
+  };
+}
+
+async function listPaymentStatuses(
+  paymentPeriodId: string,
+  { db, teacher }: AppContext,
+): Promise<Record<string, unknown>> {
+  const activeTeacher = requireTeacherProfile(teacher);
+  assertUuid(paymentPeriodId, "납부 기간 정보가 올바르지 않습니다.");
+  const period = await readAccessiblePaymentPeriod(
+    db,
+    paymentPeriodId,
+    activeTeacher,
+    {
+      allowAdmin: true,
+    },
+  );
+
+  const { data: statuses, error } = await db
+    .from("payment_statuses")
+    .select(
+      "id, student_id, amount, status, paid_at, note, students!inner(id, student_code, name, status)",
+    )
+    .eq("payment_period_id", paymentPeriodId)
+    .order("created_at", { ascending: true });
+
+  if (error) throw new EdgeApiError(500, "납부 상태 조회에 실패했습니다.");
+
+  return {
+    ok: true,
+    period: {
+      id: period.id,
+      name: period.name,
+      dueDate: period.due_date,
+    },
+    statuses: (statuses ?? []).map(formatPaymentStatus),
+  };
+}
+
+async function updatePaymentStatus(
+  paymentStatusId: string,
+  body: Record<string, unknown>,
+  { db, teacher }: AppContext,
+): Promise<Record<string, unknown>> {
+  const activeTeacher = requireTeacherProfile(teacher);
+  assertUuid(paymentStatusId, "납부 상태 정보가 올바르지 않습니다.");
+  const status = normalizePaymentStatus(body.status);
+  const note = nullableString(body.note);
+
+  const current = await readPaymentStatusForOwnerWrite(
+    db,
+    paymentStatusId,
+    activeTeacher,
+  );
+  const paidAt = status === "paid" ? new Date().toISOString() : null;
+
+  const { data: updated, error } = await db
+    .from("payment_statuses")
+    .update({
+      status,
+      note,
+      paid_at: paidAt,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", paymentStatusId)
+    .select(
+      "id, student_id, amount, status, paid_at, note, students!inner(id, student_code, name, status)",
+    )
+    .single();
+
+  if (error) throw new EdgeApiError(500, "납부 상태 변경에 실패했습니다.");
+
+  const student = normalizeJoinedObject(updated.students);
+  await createPaymentAuditLog(db, {
+    organizationId: current.organization_id,
+    studyRoomId: current.study_room_id,
+    actorTeacherId: activeTeacher.id,
+    studentId: updated.student_id,
+    entityId: paymentStatusId,
+    action: "status_changed",
+    title: "납부 상태 변경",
+    summary: `${student.name ?? "학생"} 납부 상태를 ${status}로 변경했습니다.`,
+  });
+
+  return { ok: true, status: formatPaymentStatus(updated) };
+}
+
+async function notifyUnpaidPayments(
+  paymentPeriodId: string,
+  { db, teacher }: AppContext,
+): Promise<Record<string, unknown>> {
+  const activeTeacher = requireTeacherProfile(teacher);
+  assertUuid(paymentPeriodId, "납부 기간 정보가 올바르지 않습니다.");
+  const period = await readAccessiblePaymentPeriod(
+    db,
+    paymentPeriodId,
+    activeTeacher,
+    {
+      allowAdmin: false,
+    },
+  );
+
+  const { data: unpaidStatuses, error } = await db
+    .from("payment_statuses")
+    .select(
+      "id, student_id, amount, status, students!inner(id, name)",
+    )
+    .eq("payment_period_id", paymentPeriodId)
+    .in("status", ["unpaid", "partial"]);
+
+  if (error) throw new EdgeApiError(500, "미납 대상 조회에 실패했습니다.");
+
+  let createdCount = 0;
+  for (const paymentStatus of unpaidStatuses ?? []) {
+    const student = normalizeJoinedObject(paymentStatus.students);
+    const notifications = await createPaymentReminderNotificationLogs(db, {
+      organizationId: period.organization_id,
+      studyRoomId: period.study_room_id,
+      paymentPeriodId,
+      paymentStatusId: paymentStatus.id,
+      studentId: paymentStatus.student_id,
+      studentName: stringValue(student.name) || "학생",
+      periodName: period.name,
+      dueDate: period.due_date,
+      amount: Number(paymentStatus.amount ?? 0),
+    });
+    createdCount += notifications.length;
+  }
+
+  await createPaymentAuditLog(db, {
+    organizationId: period.organization_id,
+    studyRoomId: period.study_room_id,
+    actorTeacherId: activeTeacher.id,
+    entityId: paymentPeriodId,
+    action: "message_requested",
+    title: "미납 안내 요청",
+    summary: `${period.name} 미납 안내 ${createdCount}건을 요청했습니다.`,
+  });
+
+  return {
+    ok: true,
+    notifications: { requested: createdCount },
+  };
+}
+
 async function createStudent(
   studyRoomId: string,
   body: Record<string, unknown>,
@@ -1280,6 +1575,46 @@ async function readAccessibleClass(
   return data;
 }
 
+async function readAccessiblePaymentPeriod(
+  db: SupabaseClient,
+  paymentPeriodId: string,
+  teacher: TeacherContext,
+  options: { allowAdmin: boolean },
+) {
+  const { data, error } = await db
+    .from("payment_periods")
+    .select("id, organization_id, study_room_id, name, due_date")
+    .eq("id", paymentPeriodId)
+    .maybeSingle();
+
+  if (error) throw new EdgeApiError(500, "납부 기간 조회에 실패했습니다.");
+  if (!data) throw new EdgeApiError(404, "납부 기간을 찾을 수 없습니다.");
+  await assertStudyRoomAccess(db, teacher, data.study_room_id, options);
+  return data;
+}
+
+async function readPaymentStatusForOwnerWrite(
+  db: SupabaseClient,
+  paymentStatusId: string,
+  teacher: TeacherContext,
+) {
+  const { data, error } = await db
+    .from("payment_statuses")
+    .select(
+      "id, organization_id, study_room_id, payment_period_id, student_id, study_rooms!inner(owner_teacher_id)",
+    )
+    .eq("id", paymentStatusId)
+    .maybeSingle();
+
+  if (error) throw new EdgeApiError(500, "납부 상태 조회에 실패했습니다.");
+  if (!data) throw new EdgeApiError(404, "납부 상태를 찾을 수 없습니다.");
+  const studyRoom = normalizeJoinedObject(data.study_rooms);
+  if (studyRoom.owner_teacher_id !== teacher.id) {
+    throw new EdgeApiError(403, "해당 납부 상태를 수정할 수 없습니다.");
+  }
+  return data;
+}
+
 async function readStudent(
   db: SupabaseClient,
   studentId: string,
@@ -1476,6 +1811,71 @@ async function createAttendanceNotificationLogs(
   return data ?? [];
 }
 
+async function createPaymentReminderNotificationLogs(
+  db: SupabaseClient,
+  input: {
+    organizationId: string;
+    studyRoomId: string;
+    paymentPeriodId: string;
+    paymentStatusId: string;
+    studentId: string;
+    studentName: string;
+    periodName: string;
+    dueDate: string;
+    amount: number;
+  },
+) {
+  const { data: guardians, error } = await db
+    .from("student_guardians")
+    .select("guardians!inner(id, phone, kakao_opt_in, opt_out_at, deleted_at)")
+    .eq("student_id", input.studentId);
+
+  if (error) {
+    throw new EdgeApiError(500, "보호자 알림 대상 조회에 실패했습니다.");
+  }
+
+  const rows = (guardians ?? [])
+    .flatMap((row) => normalizeGuardianContact(row.guardians))
+    .filter((guardian) =>
+      guardian.kakao_opt_in === true &&
+      guardian.opt_out_at === null &&
+      guardian.deleted_at === null
+    )
+    .map((guardian) => ({
+      organization_id: input.organizationId,
+      study_room_id: input.studyRoomId,
+      student_id: input.studentId,
+      guardian_id: guardian.id,
+      event_type: "payment_due_reminder",
+      channel: "kakao",
+      recipient_phone_masked: maskPhone(guardian.phone),
+      student_name: input.studentName,
+      class_name: input.periodName,
+      event_time: new Date().toISOString(),
+      payload: {
+        studentName: input.studentName,
+        paymentPeriodName: input.periodName,
+        dueDate: input.dueDate,
+        amount: input.amount,
+        paymentPeriodId: input.paymentPeriodId,
+        paymentStatusId: input.paymentStatusId,
+      },
+      status: "pending",
+    }));
+
+  if (rows.length === 0) return [];
+
+  const { data, error: insertError } = await db
+    .from("notification_logs")
+    .insert(rows)
+    .select("id");
+
+  if (insertError) {
+    throw new EdgeApiError(500, "카카오 미납 안내 로그 생성에 실패했습니다.");
+  }
+  return data ?? [];
+}
+
 async function createAuditLog(
   db: SupabaseClient,
   input: {
@@ -1500,6 +1900,34 @@ async function createAuditLog(
     entity_type: "attendance",
     entity_id: input.entityId,
     action: "checked_in",
+    title: input.title,
+    summary: input.summary,
+  });
+
+  if (error) throw new EdgeApiError(500, "사용 히스토리 기록에 실패했습니다.");
+}
+
+async function createPaymentAuditLog(
+  db: SupabaseClient,
+  input: {
+    organizationId: string;
+    studyRoomId: string;
+    actorTeacherId: string;
+    studentId?: string;
+    entityId: string;
+    action: "created" | "status_changed" | "message_requested";
+    title: string;
+    summary: string;
+  },
+) {
+  const { error } = await db.from("audit_logs").insert({
+    organization_id: input.organizationId,
+    study_room_id: input.studyRoomId,
+    actor_teacher_id: input.actorTeacherId,
+    student_id: input.studentId,
+    entity_type: "payment",
+    entity_id: input.entityId,
+    action: input.action,
     title: input.title,
     summary: input.summary,
   });
@@ -1781,6 +2209,22 @@ function normalizeStudentStatus(value: unknown) {
   return status;
 }
 
+function normalizePaymentStatus(value: unknown) {
+  const status = stringValue(value) || "unpaid";
+  if (!["unpaid", "paid", "partial", "exempt", "refunded"].includes(status)) {
+    throw new EdgeApiError(400, "납부 상태가 올바르지 않습니다.");
+  }
+  return status;
+}
+
+function normalizeAmount(value: unknown) {
+  const amount = Number(value ?? 0);
+  if (!Number.isInteger(amount) || amount < 0) {
+    throw new EdgeApiError(400, "납부 금액이 올바르지 않습니다.");
+  }
+  return amount;
+}
+
 function normalizeTime(value: unknown, message: string) {
   const time = stringValue(value);
   if (!/^\d{2}:\d{2}$/.test(time)) throw new EdgeApiError(400, message);
@@ -1818,6 +2262,21 @@ function formatManagedStudent(student: Record<string, unknown>) {
     gender: student.gender,
     ageGroup: student.age_group,
     avatarKey: student.avatar_key,
+  };
+}
+
+function formatPaymentStatus(row: Record<string, unknown>) {
+  const student = normalizeJoinedObject(row.students);
+  return {
+    id: row.id,
+    studentId: row.student_id,
+    studentName: student.name,
+    studentCode: student.student_code,
+    studentStatus: student.status,
+    amount: row.amount,
+    status: row.status,
+    paidAt: row.paid_at,
+    note: row.note,
   };
 }
 
