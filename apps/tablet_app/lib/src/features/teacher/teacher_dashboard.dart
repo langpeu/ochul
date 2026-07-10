@@ -6,6 +6,7 @@ import '../../core/teacher_gate.dart';
 import '../../models/sample_data.dart';
 import 'admin_management_service.dart';
 import 'audit_log_service.dart';
+import 'attendance_management_service.dart';
 import 'class_management_service.dart';
 import 'enrollment_management_service.dart';
 import 'notification_log_service.dart';
@@ -47,6 +48,9 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
     edgeClient: EdgeFunctionClient(),
   );
   final _notificationLogService = const NotificationLogService(
+    edgeClient: EdgeFunctionClient(),
+  );
+  final _attendanceManagementService = const AttendanceManagementService(
     edgeClient: EdgeFunctionClient(),
   );
 
@@ -95,6 +99,7 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
               adminService: _adminService,
               paymentService: _paymentService,
               notificationLogService: _notificationLogService,
+              attendanceManagementService: _attendanceManagementService,
             ),
           ),
         ],
@@ -114,6 +119,7 @@ class _TeacherBoardContent extends StatelessWidget {
     required this.adminService,
     required this.paymentService,
     required this.notificationLogService,
+    required this.attendanceManagementService,
   });
 
   final AppConfig config;
@@ -125,6 +131,7 @@ class _TeacherBoardContent extends StatelessWidget {
   final AdminManagementService adminService;
   final PaymentManagementService paymentService;
   final NotificationLogService notificationLogService;
+  final AttendanceManagementService attendanceManagementService;
 
   @override
   Widget build(BuildContext context) {
@@ -194,6 +201,12 @@ class _TeacherBoardContent extends StatelessWidget {
                   ? const _EmptyStudyRoomPanel()
                   : Column(
                       children: [
+                        Expanded(
+                          child: _AttendanceManagementPanel(
+                            service: attendanceManagementService,
+                          ),
+                        ),
+                        const SizedBox(height: 16),
                         Expanded(
                           child: _PaymentManagementPanel(
                             studyRoom: studyRoom,
@@ -2517,6 +2530,207 @@ class _EmptyStudyRoomPanel extends StatelessWidget {
   }
 }
 
+class _AttendanceManagementPanel extends StatefulWidget {
+  const _AttendanceManagementPanel({required this.service});
+
+  final AttendanceManagementService service;
+
+  @override
+  State<_AttendanceManagementPanel> createState() =>
+      _AttendanceManagementPanelState();
+}
+
+class _AttendanceManagementPanelState
+    extends State<_AttendanceManagementPanel> {
+  late Future<_TeacherAttendancePanelData> _dataFuture;
+  String? _selectedSessionId;
+  String? _processingStudentId;
+
+  @override
+  void initState() {
+    super.initState();
+    _dataFuture = _loadData();
+  }
+
+  Future<_TeacherAttendancePanelData> _loadData() async {
+    final sessions = await widget.service.fetchTodaySessions();
+    final sessionId = _selectedSessionId ?? sessions.firstOrNull?.id;
+    final effectiveSessionId =
+        sessions.any((session) => session.id == sessionId)
+        ? sessionId
+        : sessions.firstOrNull?.id;
+    final attendance = effectiveSessionId == null
+        ? null
+        : await widget.service.fetchSessionAttendance(effectiveSessionId);
+    _selectedSessionId = effectiveSessionId;
+    return _TeacherAttendancePanelData(
+      sessions: sessions,
+      attendance: attendance,
+    );
+  }
+
+  Future<void> _updateStatus(
+    TeacherAttendanceStudent student,
+    String status,
+  ) async {
+    final sessionId = _selectedSessionId;
+    if (sessionId == null) return;
+    setState(() => _processingStudentId = student.id);
+    try {
+      await widget.service.updateAttendance(
+        classSessionId: sessionId,
+        studentId: student.id,
+        status: status,
+        note: '',
+      );
+      if (mounted) setState(() => _dataFuture = _loadData());
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('출결 상태 변경에 실패했습니다.')));
+      }
+    } finally {
+      if (mounted) setState(() => _processingStudentId = null);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('출결 관리', style: Theme.of(context).textTheme.titleLarge),
+            const SizedBox(height: 8),
+            Expanded(
+              child: FutureBuilder<_TeacherAttendancePanelData>(
+                future: _dataFuture,
+                builder: (context, snapshot) {
+                  if (snapshot.connectionState != ConnectionState.done) {
+                    return const Center(child: CircularProgressIndicator());
+                  }
+                  if (snapshot.hasError) {
+                    return Text('출결 정보를 불러오지 못했습니다. ${snapshot.error}');
+                  }
+                  final data = snapshot.requireData;
+                  if (data.sessions.isEmpty) {
+                    return const Center(child: Text('열린 출석 회차가 없습니다.'));
+                  }
+                  final students =
+                      data.attendance?.students ??
+                      const <TeacherAttendanceStudent>[];
+                  return Column(
+                    children: [
+                      DropdownButtonFormField<String>(
+                        initialValue: _selectedSessionId,
+                        decoration: const InputDecoration(
+                          labelText: '수업 회차',
+                          border: OutlineInputBorder(),
+                        ),
+                        items: [
+                          for (final session in data.sessions)
+                            DropdownMenuItem(
+                              value: session.id,
+                              child: Text(
+                                '${session.className} · ${session.scheduleText}',
+                              ),
+                            ),
+                        ],
+                        onChanged: (sessionId) {
+                          if (sessionId == null) return;
+                          setState(() {
+                            _selectedSessionId = sessionId;
+                            _dataFuture = _loadData();
+                          });
+                        },
+                      ),
+                      const SizedBox(height: 8),
+                      Expanded(
+                        child: students.isEmpty
+                            ? const Center(child: Text('출결 대상 학생이 없습니다.'))
+                            : ListView.builder(
+                                itemCount: students.length,
+                                itemBuilder: (context, index) {
+                                  final student = students[index];
+                                  final processing =
+                                      _processingStudentId == student.id;
+                                  return ListTile(
+                                    dense: true,
+                                    contentPadding: EdgeInsets.zero,
+                                    leading: Icon(
+                                      _teacherAttendanceStatusIcon(
+                                        student.status,
+                                      ),
+                                    ),
+                                    title: Text(student.name),
+                                    subtitle: Text(
+                                      '${student.code} · ${_teacherAttendanceStatusLabel(student.status)}',
+                                    ),
+                                    trailing: processing
+                                        ? const SizedBox(
+                                            width: 18,
+                                            height: 18,
+                                            child: CircularProgressIndicator(
+                                              strokeWidth: 2,
+                                            ),
+                                          )
+                                        : PopupMenuButton<String>(
+                                            tooltip: '출결 상태 변경',
+                                            icon: const Icon(Icons.more_vert),
+                                            onSelected: (status) =>
+                                                _updateStatus(student, status),
+                                            itemBuilder: (context) => const [
+                                              PopupMenuItem(
+                                                value: 'present',
+                                                child: Text('출석'),
+                                              ),
+                                              PopupMenuItem(
+                                                value: 'late',
+                                                child: Text('지각'),
+                                              ),
+                                              PopupMenuItem(
+                                                value: 'absent',
+                                                child: Text('결석'),
+                                              ),
+                                              PopupMenuItem(
+                                                value: 'excused',
+                                                child: Text('인정결석'),
+                                              ),
+                                              PopupMenuItem(
+                                                value: 'left_early',
+                                                child: Text('조퇴'),
+                                              ),
+                                            ],
+                                          ),
+                                  );
+                                },
+                              ),
+                      ),
+                    ],
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _TeacherAttendancePanelData {
+  const _TeacherAttendancePanelData({
+    required this.sessions,
+    required this.attendance,
+  });
+
+  final List<TeacherAttendanceSession> sessions;
+  final TeacherAttendanceData? attendance;
+}
+
 class _PaymentManagementPanel extends StatefulWidget {
   const _PaymentManagementPanel({
     required this.studyRoom,
@@ -3214,6 +3428,28 @@ IconData _paymentStatusIcon(String status) {
     'partial' => Icons.timelapse_outlined,
     'exempt' => Icons.remove_circle_outline,
     _ => Icons.pending_outlined,
+  };
+}
+
+String _teacherAttendanceStatusLabel(String status) {
+  return switch (status) {
+    'present' => '출석',
+    'late' => '지각',
+    'absent' => '결석',
+    'excused' => '인정결석',
+    'left_early' => '조퇴',
+    _ => '대기',
+  };
+}
+
+IconData _teacherAttendanceStatusIcon(String status) {
+  return switch (status) {
+    'present' => Icons.check_circle_outline,
+    'late' => Icons.schedule_outlined,
+    'absent' => Icons.cancel_outlined,
+    'excused' => Icons.event_available_outlined,
+    'left_early' => Icons.logout_outlined,
+    _ => Icons.hourglass_empty_outlined,
   };
 }
 

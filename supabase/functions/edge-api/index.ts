@@ -261,6 +261,25 @@ async function routeEdgeRequest(
     return await listTodayAttendance(context);
   }
 
+  const classSessionAttendanceMatch = path.match(
+    /^\/class-sessions\/([^/]+)\/attendance$/,
+  );
+  if (classSessionAttendanceMatch) {
+    if (method === "GET") {
+      return await listClassSessionAttendance(
+        classSessionAttendanceMatch[1],
+        context,
+      );
+    }
+    if (method === "PATCH") {
+      return await updateClassSessionAttendance(
+        classSessionAttendanceMatch[1],
+        body,
+        context,
+      );
+    }
+  }
+
   const checkInMatch = path.match(
     /^\/class-sessions\/([^/]+)\/check-in$/,
   );
@@ -1005,6 +1024,103 @@ async function listTodayAttendance(
   return { ok: true, sessions: formatted };
 }
 
+async function listClassSessionAttendance(
+  classSessionId: string,
+  { db, teacher }: AppContext,
+): Promise<Record<string, unknown>> {
+  const activeTeacher = requireTeacherProfile(teacher);
+  assertUuid(classSessionId, "수업 회차 정보가 올바르지 않습니다.");
+  const session = await readClassSession(db, classSessionId);
+  await assertStudyRoomAccess(db, activeTeacher, session.study_room_id, {
+    allowAdmin: true,
+  });
+  const classInfo = await readClassInfo(db, session.class_id);
+  const students = await listSessionStudents(
+    db,
+    classSessionId,
+    session.class_id,
+  );
+
+  return {
+    ok: true,
+    session: {
+      id: session.id,
+      classId: session.class_id,
+      className: classInfo.name,
+      status: session.status,
+    },
+    students,
+  };
+}
+
+async function updateClassSessionAttendance(
+  classSessionId: string,
+  body: Record<string, unknown>,
+  { db, teacher }: AppContext,
+): Promise<Record<string, unknown>> {
+  const activeTeacher = requireTeacherProfile(teacher);
+  assertUuid(classSessionId, "수업 회차 정보가 올바르지 않습니다.");
+  const studentId = stringValue(body.studentId);
+  assertUuid(studentId, "학생 정보가 올바르지 않습니다.");
+  const status = normalizeAttendanceStatus(body.status);
+  const note = nullableString(body.note);
+
+  const session = await readClassSession(db, classSessionId);
+  await assertStudyRoomAccess(db, activeTeacher, session.study_room_id, {
+    allowAdmin: false,
+  });
+  const student = await readStudent(db, studentId, session.study_room_id);
+  await assertStudentEnrollment(db, session.class_id, studentId);
+
+  const { data: record, error } = await db
+    .from("attendance_records")
+    .upsert({
+      organization_id: session.organization_id,
+      study_room_id: session.study_room_id,
+      class_session_id: classSessionId,
+      student_id: studentId,
+      status,
+      checked_in_at: status === "present" || status === "late"
+        ? new Date().toISOString()
+        : null,
+      checked_in_method: "teacher_manual",
+      note,
+      created_by_teacher_id: activeTeacher.id,
+      updated_by_teacher_id: activeTeacher.id,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "class_session_id,student_id" })
+    .select("id, student_id, status, checked_in_at, note")
+    .single();
+
+  if (error) throw new EdgeApiError(500, "출결 상태 저장에 실패했습니다.");
+
+  const classInfo = await readClassInfo(db, session.class_id);
+  await createAuditLog(db, {
+    organizationId: session.organization_id,
+    studyRoomId: session.study_room_id,
+    actorTeacherId: activeTeacher.id,
+    studentId,
+    classId: session.class_id,
+    classSessionId,
+    entityId: record.id,
+    action: "status_changed",
+    title: "출결 상태 수정",
+    summary:
+      `${student.name} 학생의 ${classInfo.name} 출결 상태를 ${status}로 수정했습니다.`,
+  });
+
+  return {
+    ok: true,
+    attendance: {
+      recordId: record.id,
+      studentId: record.student_id,
+      status: record.status,
+      checkedInAt: record.checked_in_at,
+      note: record.note,
+    },
+  };
+}
+
 async function listSessionStudents(
   db: SupabaseClient,
   classSessionId: string,
@@ -1023,23 +1139,27 @@ async function listSessionStudents(
 
   const { data: records, error: recordError } = await db
     .from("attendance_records")
-    .select("student_id, status")
+    .select("id, student_id, status, checked_in_at, note")
     .eq("class_session_id", classSessionId);
 
   if (recordError) {
     throw new EdgeApiError(500, "출석 상태 조회에 실패했습니다.");
   }
   const statusByStudentId = new Map(
-    (records ?? []).map((record) => [record.student_id, record.status]),
+    (records ?? []).map((record) => [record.student_id, record]),
   );
 
   return (enrollments ?? []).map((row) => {
     const student = normalizeJoinedObject(row.students);
+    const record = statusByStudentId.get(String(student.id));
     return {
       id: student.id,
       code: student.student_code,
       name: student.name,
-      status: statusByStudentId.get(String(student.id)) ?? "waiting",
+      recordId: record?.id ?? null,
+      status: record?.status ?? "waiting",
+      checkedInAt: record?.checked_in_at ?? null,
+      note: record?.note ?? null,
     };
   });
 }
@@ -2504,6 +2624,7 @@ async function createAuditLog(
     classId: string;
     classSessionId: string;
     entityId: string;
+    action?: "checked_in" | "status_changed";
     title: string;
     summary: string;
   },
@@ -2517,7 +2638,7 @@ async function createAuditLog(
     class_session_id: input.classSessionId,
     entity_type: "attendance",
     entity_id: input.entityId,
-    action: "checked_in",
+    action: input.action ?? "checked_in",
     title: input.title,
     summary: input.summary,
   });
@@ -2936,6 +3057,16 @@ function normalizeNotificationStatusFilter(value: unknown) {
   const status = stringValue(value) || "all";
   if (!["all", "pending", "sent", "failed", "cancelled"].includes(status)) {
     throw new EdgeApiError(400, "알림 상태 필터가 올바르지 않습니다.");
+  }
+  return status;
+}
+
+function normalizeAttendanceStatus(value: unknown) {
+  const status = stringValue(value);
+  if (
+    !["present", "late", "absent", "excused", "left_early"].includes(status)
+  ) {
+    throw new EdgeApiError(400, "출결 상태가 올바르지 않습니다.");
   }
   return status;
 }

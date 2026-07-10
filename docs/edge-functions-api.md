@@ -98,6 +98,7 @@ Edge API 경로는 REST 스타일로 간결하고 명확하게 둔다.
 
 - `GET /attendance/today`: 오늘 수업 목록
 - `GET /class-sessions/{classSessionId}/attendance`: 수업별 출석 상태
+- `PATCH /class-sessions/{classSessionId}/attendance`: 학생별 출결 상태 수동 저장
 - `POST /class-sessions/{classSessionId}/check-in`: 학생 6자리 비밀번호 출석 체크
 - `POST /class-sessions/{classSessionId}/seat-check-in`: 학생 아바타 좌석 드래그앤드롭 출석 체크
 - `PATCH /attendance-records/{attendanceRecordId}`: 선생님 수동 출결 수정
