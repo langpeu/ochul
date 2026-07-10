@@ -34,6 +34,9 @@ deno fmt --check supabase/functions/edge-api/index.ts
 echo "Checking Edge Function types..."
 deno check supabase/functions/edge-api/index.ts
 
+echo "Checking Edge API documented route coverage..."
+scripts/check-edge-api-routes.sh
+
 echo "Checking local secret ignore rules..."
 git check-ignore -v apps/tablet_app/Secrets.dev.config >/dev/null
 git check-ignore -v apps/tablet_app/Secrets.prod.config >/dev/null
