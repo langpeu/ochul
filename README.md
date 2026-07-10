@@ -69,3 +69,18 @@ docs/
 현재 저장소에는 Flutter 앱과 Supabase migration SQL을 둡니다.
 Supabase는 로컬 스택이 아니라 MCP로 Cloud 프로젝트에 연결해 사용합니다.
 `supabase start`, `supabase db reset` 같은 로컬 스택 명령은 기본 workflow에서 사용하지 않습니다.
+
+Cloud 적용 전에는 로컬 Supabase CLI 설정을 만든 뒤 preflight를 실행합니다.
+
+```bash
+supabase init
+export SUPABASE_ACCESS_TOKEN=...
+export SUPABASE_PROJECT_REF=...
+scripts/supabase-cloud-preflight.sh
+```
+
+실제 Edge Function 배포는 명시적으로 요청된 경우에만 실행합니다.
+
+```bash
+DEPLOY_EDGE_FUNCTION=1 scripts/supabase-cloud-preflight.sh
+```

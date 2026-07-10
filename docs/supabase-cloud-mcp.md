@@ -16,6 +16,36 @@
 5. RLS, Auth, 정책 동작을 검증한다.
 6. 운영 반영이 필요하면 사용자 확인 후 진행한다.
 
+## CLI Preflight
+
+로컬에서 Cloud 적용 전 다음 스크립트를 실행한다.
+
+```bash
+export SUPABASE_ACCESS_TOKEN=...
+export SUPABASE_PROJECT_REF=...
+scripts/supabase-cloud-preflight.sh
+```
+
+이 스크립트는 다음을 확인한다.
+
+- Supabase CLI 설치 여부
+- Deno 설치 여부
+- `SUPABASE_ACCESS_TOKEN` 설정 여부
+- `SUPABASE_PROJECT_REF` 설정 여부
+- `supabase/config.toml` 존재 여부
+- Supabase 프로젝트 접근 가능 여부
+- `supabase link --project-ref`
+- `supabase db push --dry-run`
+- `deno fmt --check` 및 `deno check`
+
+Edge Function 실제 배포는 dry-run이 없으므로 기본적으로 실행하지 않는다. 배포가 필요할 때만 명시적으로 켠다.
+
+```bash
+DEPLOY_EDGE_FUNCTION=1 scripts/supabase-cloud-preflight.sh
+```
+
+`supabase/config.toml`은 로컬 링크/개발 설정이므로 커밋하지 않는다. 처음 받은 작업공간에서는 `supabase init`으로 생성한다.
+
 ## 금지
 
 - service role key를 repo에 저장하지 않는다.
