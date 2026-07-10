@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../core/app_config.dart';
 import '../../core/edge_function_client.dart';
 import '../../core/teacher_gate.dart';
+import '../../core/teacher_pin_store.dart';
 import '../../models/sample_data.dart';
 import 'admin_management_service.dart';
 import 'audit_log_service.dart';
@@ -27,6 +28,7 @@ class TeacherDashboard extends StatefulWidget {
 class _TeacherDashboardState extends State<TeacherDashboard> {
   var _unlocked = false;
   final _gate = TeacherGate();
+  final _pinStore = const TeacherPinStore();
   final _homeService = const TeacherHomeService(
     edgeClient: EdgeFunctionClient(),
   );
@@ -59,16 +61,71 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
   );
 
   Future<void> _unlock() async {
-    final ok = await _gate.authenticate();
+    TeacherGateResult result;
+    try {
+      result = await _gate.authenticate();
+    } catch (_) {
+      result = TeacherGateResult.fallbackRequired;
+    }
     if (!mounted) {
       return;
     }
-    setState(() => _unlocked = ok);
-    if (!ok) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('기기 인증을 완료하지 못했습니다.')));
+    if (result == TeacherGateResult.authenticated) {
+      setState(() => _unlocked = true);
+      return;
     }
+    await _unlockWithAdminPin();
+  }
+
+  Future<void> _unlockWithAdminPin() async {
+    final hasPin = await _pinStore.hasPin();
+    if (!mounted) {
+      return;
+    }
+
+    if (!hasPin) {
+      final newPin = await showDialog<String>(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => const _TeacherAdminPinSetupDialog(),
+      );
+      if (newPin == null) {
+        _showGateFailedMessage('선생님 모드 관리자 PIN 설정이 필요합니다.');
+        return;
+      }
+      await _pinStore.savePin(newPin);
+      if (!mounted) {
+        return;
+      }
+      setState(() => _unlocked = true);
+      return;
+    }
+
+    final pin = await showDialog<String>(
+      context: context,
+      builder: (context) => const _TeacherAdminPinVerifyDialog(),
+    );
+    if (pin == null) {
+      _showGateFailedMessage('기기 인증 또는 관리자 PIN 인증이 필요합니다.');
+      return;
+    }
+    final verified = await _pinStore.verifyPin(pin);
+    if (!mounted) {
+      return;
+    }
+    setState(() => _unlocked = verified);
+    if (!verified) {
+      _showGateFailedMessage('관리자 PIN이 일치하지 않습니다.');
+    }
+  }
+
+  void _showGateFailedMessage(String message) {
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   @override
@@ -107,6 +164,158 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _TeacherAdminPinSetupDialog extends StatefulWidget {
+  const _TeacherAdminPinSetupDialog();
+
+  @override
+  State<_TeacherAdminPinSetupDialog> createState() =>
+      _TeacherAdminPinSetupDialogState();
+}
+
+class _TeacherAdminPinSetupDialogState
+    extends State<_TeacherAdminPinSetupDialog> {
+  final _pinController = TextEditingController();
+  final _confirmController = TextEditingController();
+  String? _errorText;
+
+  @override
+  void dispose() {
+    _pinController.dispose();
+    _confirmController.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final pin = _pinController.text.trim();
+    final confirm = _confirmController.text.trim();
+    if (!RegExp(r'^\d{6}$').hasMatch(pin)) {
+      setState(() => _errorText = '관리자 PIN은 숫자 6자리여야 합니다.');
+      return;
+    }
+    if (pin != confirm) {
+      setState(() => _errorText = '확인 PIN이 일치하지 않습니다.');
+      return;
+    }
+    Navigator.of(context).pop(pin);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('관리자 PIN 설정'),
+      content: SizedBox(
+        width: 360,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: _pinController,
+              keyboardType: TextInputType.number,
+              obscureText: true,
+              maxLength: 6,
+              decoration: const InputDecoration(labelText: '새 관리자 PIN'),
+            ),
+            TextField(
+              controller: _confirmController,
+              keyboardType: TextInputType.number,
+              obscureText: true,
+              maxLength: 6,
+              decoration: const InputDecoration(labelText: 'PIN 확인'),
+              onSubmitted: (_) => _submit(),
+            ),
+            if (_errorText != null) ...[
+              const SizedBox(height: 8),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  _errorText!,
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('취소'),
+        ),
+        FilledButton(onPressed: _submit, child: const Text('설정')),
+      ],
+    );
+  }
+}
+
+class _TeacherAdminPinVerifyDialog extends StatefulWidget {
+  const _TeacherAdminPinVerifyDialog();
+
+  @override
+  State<_TeacherAdminPinVerifyDialog> createState() =>
+      _TeacherAdminPinVerifyDialogState();
+}
+
+class _TeacherAdminPinVerifyDialogState
+    extends State<_TeacherAdminPinVerifyDialog> {
+  final _pinController = TextEditingController();
+  String? _errorText;
+
+  @override
+  void dispose() {
+    _pinController.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final pin = _pinController.text.trim();
+    if (!RegExp(r'^\d{6}$').hasMatch(pin)) {
+      setState(() => _errorText = '관리자 PIN은 숫자 6자리여야 합니다.');
+      return;
+    }
+    Navigator.of(context).pop(pin);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('관리자 PIN 입력'),
+      content: SizedBox(
+        width: 320,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: _pinController,
+              keyboardType: TextInputType.number,
+              obscureText: true,
+              maxLength: 6,
+              decoration: const InputDecoration(labelText: '관리자 PIN'),
+              onSubmitted: (_) => _submit(),
+            ),
+            if (_errorText != null) ...[
+              const SizedBox(height: 8),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  _errorText!,
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('취소'),
+        ),
+        FilledButton(onPressed: _submit, child: const Text('확인')),
+      ],
     );
   }
 }

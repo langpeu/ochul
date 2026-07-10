@@ -6,17 +6,22 @@ class TeacherGate {
 
   final LocalAuthentication _localAuth;
 
-  Future<bool> authenticate() async {
+  Future<TeacherGateResult> authenticate() async {
     final supported = await _localAuth.isDeviceSupported();
     final canCheck = await _localAuth.canCheckBiometrics;
     if (!supported && !canCheck) {
-      return false;
+      return TeacherGateResult.fallbackRequired;
     }
 
-    return _localAuth.authenticate(
+    final authenticated = await _localAuth.authenticate(
       localizedReason: '선생님 모드로 들어가기 위해 인증이 필요합니다.',
       biometricOnly: false,
       persistAcrossBackgrounding: true,
     );
+    return authenticated
+        ? TeacherGateResult.authenticated
+        : TeacherGateResult.fallbackRequired;
   }
 }
+
+enum TeacherGateResult { authenticated, fallbackRequired }
