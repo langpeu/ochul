@@ -54,8 +54,12 @@ Edge API 경로는 REST 스타일로 간결하고 명확하게 둔다.
 
 - `GET /study-rooms`: 공부방 목록
 - `POST /study-rooms`: 공부방 생성
+  - Body: `{ "name": "초등 수학관", "description": "선택 설명" }`
+  - 생성한 선생님이 `owner`가 되며 `study_room` 생성 히스토리를 기록한다.
 - `GET /study-rooms/{studyRoomId}`: 공부방 상세
 - `PATCH /study-rooms/{studyRoomId}`: 공부방 수정
+  - Body: `{ "name": "초등 수학관", "description": "선택 설명" }`
+  - 소유 선생님만 수정할 수 있고 `study_room` 수정 히스토리를 기록한다.
 
 ### students
 

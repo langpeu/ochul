@@ -86,8 +86,6 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
         children: [
           Text('선생님 보드', style: Theme.of(context).textTheme.headlineMedium),
           const SizedBox(height: 16),
-          _TeacherHomeHeader(config: widget.config, service: _homeService),
-          const SizedBox(height: 16),
           Expanded(
             child: _TeacherBoardContent(
               config: widget.config,
@@ -108,7 +106,7 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
   }
 }
 
-class _TeacherBoardContent extends StatelessWidget {
+class _TeacherBoardContent extends StatefulWidget {
   const _TeacherBoardContent({
     required this.config,
     required this.homeService,
@@ -134,22 +132,141 @@ class _TeacherBoardContent extends StatelessWidget {
   final AttendanceManagementService attendanceManagementService;
 
   @override
+  State<_TeacherBoardContent> createState() => _TeacherBoardContentState();
+}
+
+class _TeacherBoardContentState extends State<_TeacherBoardContent> {
+  late Future<TeacherHome>? _homeFuture;
+  String? _selectedStudyRoomId;
+
+  @override
+  void initState() {
+    super.initState();
+    _homeFuture = widget.config.isSupabaseConfigured
+        ? widget.homeService.fetchMe()
+        : null;
+  }
+
+  void _reloadHome({String? selectedStudyRoomId}) {
+    final future = widget.homeService.fetchMe();
+    setState(() {
+      _selectedStudyRoomId = selectedStudyRoomId ?? _selectedStudyRoomId;
+      _homeFuture = future;
+    });
+  }
+
+  Future<void> _onboard({
+    required String teacherName,
+    required String studyRoomName,
+  }) async {
+    final home = await widget.homeService.onboard(
+      teacherName: teacherName,
+      studyRoomName: studyRoomName,
+    );
+    if (mounted) {
+      setState(() {
+        _selectedStudyRoomId = home.studyRooms.firstOrNull?.id;
+        _homeFuture = Future.value(home);
+      });
+    }
+  }
+
+  Future<void> _createStudyRoom() async {
+    final result = await showDialog<_StudyRoomEditResult>(
+      context: context,
+      builder: (context) => const _StudyRoomEditDialog(),
+    );
+    if (result == null) return;
+
+    try {
+      final studyRoom = await widget.homeService.createStudyRoom(
+        name: result.name,
+        description: result.description,
+      );
+      if (mounted) {
+        _reloadHome(selectedStudyRoomId: studyRoom.id);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('${studyRoom.name} 공부방을 만들었습니다.')),
+        );
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('공부방 생성에 실패했습니다.')));
+      }
+    }
+  }
+
+  Future<void> _editStudyRoom(StudyRoomSummary studyRoom) async {
+    final result = await showDialog<_StudyRoomEditResult>(
+      context: context,
+      builder: (context) => _StudyRoomEditDialog(studyRoom: studyRoom),
+    );
+    if (result == null) return;
+
+    try {
+      final updated = await widget.homeService.updateStudyRoom(
+        studyRoomId: studyRoom.id,
+        name: result.name,
+        description: result.description,
+      );
+      if (mounted) {
+        _reloadHome(selectedStudyRoomId: updated.id);
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('${updated.name} 공부방을 수정했습니다.')));
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('공부방 수정에 실패했습니다.')));
+      }
+    }
+  }
+
+  void _selectStudyRoom(String studyRoomId) {
+    setState(() => _selectedStudyRoomId = studyRoomId);
+  }
+
+  @override
   Widget build(BuildContext context) {
-    if (!config.isSupabaseConfigured) {
-      return Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
+    if (!widget.config.isSupabaseConfigured) {
+      return Column(
         children: [
-          Expanded(child: _ClassPanel(classes: sampleClasses)),
-          const SizedBox(width: 16),
-          Expanded(child: _EnrollmentPanel(classes: sampleClasses)),
-          const SizedBox(width: 16),
-          const Expanded(child: _SampleAuditPanel()),
+          const _StudyRoomSummaryBar(
+            teacherName: '홍선생',
+            role: 'teacher',
+            studyRooms: [
+              StudyRoomSummary(
+                id: 'sample-room-1',
+                name: '홍선생 공부방',
+                description: '화면 설계 모드 샘플',
+              ),
+            ],
+            selectedStudyRoomId: 'sample-room-1',
+            designMode: true,
+          ),
+          const SizedBox(height: 16),
+          Expanded(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(child: _ClassPanel(classes: sampleClasses)),
+                const SizedBox(width: 16),
+                Expanded(child: _EnrollmentPanel(classes: sampleClasses)),
+                const SizedBox(width: 16),
+                const Expanded(child: _SampleAuditPanel()),
+              ],
+            ),
+          ),
         ],
       );
     }
 
     return FutureBuilder<TeacherHome>(
-      future: homeService.fetchMe(),
+      future: _homeFuture,
       builder: (context, snapshot) {
         if (snapshot.connectionState != ConnectionState.done) {
           return const Center(child: CircularProgressIndicator());
@@ -158,71 +275,128 @@ class _TeacherBoardContent extends StatelessWidget {
           return _TeacherHomeError(message: snapshot.error.toString());
         }
         final home = snapshot.requireData;
-        if (home.teacher?.role == 'admin') {
-          return _AdminDashboardPanel(service: adminService);
+        if (home.needsOnboarding) {
+          return _TeacherOnboardingCard(onSubmit: _onboard);
         }
-        final studyRoom = home.studyRooms.isEmpty
-            ? null
-            : home.studyRooms.first;
-        return Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        final teacher = home.teacher;
+        if (teacher == null) {
+          return const _TeacherHomeError(message: '선생님 프로필이 필요합니다.');
+        }
+        if (home.teacher?.role == 'admin') {
+          return Column(
+            children: [
+              _StudyRoomSummaryBar(
+                teacherName: teacher.name,
+                role: teacher.role,
+                studyRooms: home.studyRooms,
+                selectedStudyRoomId: _selectedStudyRoomId,
+                designMode: false,
+              ),
+              const SizedBox(height: 16),
+              Expanded(
+                child: _AdminDashboardPanel(service: widget.adminService),
+              ),
+            ],
+          );
+        }
+        final selectedStudyRoomBelongs = home.studyRooms.any(
+          (studyRoom) => studyRoom.id == _selectedStudyRoomId,
+        );
+        final studyRoom = selectedStudyRoomBelongs
+            ? home.studyRooms.firstWhere(
+                (studyRoom) => studyRoom.id == _selectedStudyRoomId,
+              )
+            : home.studyRooms.firstOrNull;
+        if (_selectedStudyRoomId == null && studyRoom != null) {
+          _selectedStudyRoomId = studyRoom.id;
+        }
+
+        return Column(
           children: [
-            Expanded(
-              child: studyRoom == null
-                  ? const _EmptyClassPanel()
-                  : _ClassManagementPanel(
-                      studyRoom: studyRoom,
-                      service: classService,
-                    ),
+            _StudyRoomSummaryBar(
+              teacherName: teacher.name,
+              role: teacher.role,
+              studyRooms: home.studyRooms,
+              selectedStudyRoomId: studyRoom?.id,
+              designMode: false,
+              onSelected: _selectStudyRoom,
+              onCreate: _createStudyRoom,
+              onEdit: studyRoom == null
+                  ? null
+                  : () => _editStudyRoom(studyRoom),
             ),
-            const SizedBox(width: 16),
             Expanded(
-              child: studyRoom == null
-                  ? const _EmptyStudyRoomPanel()
-                  : _StudentManagementPanel(
-                      studyRoom: studyRoom,
-                      service: studentService,
+              child: Padding(
+                padding: const EdgeInsets.only(top: 16),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: studyRoom == null
+                          ? const _EmptyClassPanel()
+                          : _ClassManagementPanel(
+                              key: ValueKey('classes-${studyRoom.id}'),
+                              studyRoom: studyRoom,
+                              service: widget.classService,
+                            ),
                     ),
-            ),
-            const SizedBox(width: 16),
-            Expanded(
-              child: studyRoom == null
-                  ? const _EmptyStudyRoomPanel()
-                  : _EnrollmentManagementPanel(
-                      studyRoom: studyRoom,
-                      classService: classService,
-                      studentService: studentService,
-                      enrollmentService: enrollmentService,
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: studyRoom == null
+                          ? const _EmptyStudyRoomPanel()
+                          : _StudentManagementPanel(
+                              key: ValueKey('students-${studyRoom.id}'),
+                              studyRoom: studyRoom,
+                              service: widget.studentService,
+                            ),
                     ),
-            ),
-            const SizedBox(width: 16),
-            Expanded(
-              child: studyRoom == null
-                  ? const _EmptyStudyRoomPanel()
-                  : Column(
-                      children: [
-                        Expanded(
-                          child: _AttendanceManagementPanel(
-                            service: attendanceManagementService,
-                          ),
-                        ),
-                        const SizedBox(height: 16),
-                        Expanded(
-                          child: _PaymentManagementPanel(
-                            studyRoom: studyRoom,
-                            service: paymentService,
-                          ),
-                        ),
-                        const SizedBox(height: 16),
-                        Expanded(
-                          child: _AuditHistoryPanel(
-                            studyRoom: studyRoom,
-                            auditLogService: auditLogService,
-                            notificationLogService: notificationLogService,
-                          ),
-                        ),
-                      ],
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: studyRoom == null
+                          ? const _EmptyStudyRoomPanel()
+                          : _EnrollmentManagementPanel(
+                              key: ValueKey('enrollment-${studyRoom.id}'),
+                              studyRoom: studyRoom,
+                              classService: widget.classService,
+                              studentService: widget.studentService,
+                              enrollmentService: widget.enrollmentService,
+                            ),
                     ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: studyRoom == null
+                          ? const _EmptyStudyRoomPanel()
+                          : Column(
+                              children: [
+                                Expanded(
+                                  child: _AttendanceManagementPanel(
+                                    service: widget.attendanceManagementService,
+                                  ),
+                                ),
+                                const SizedBox(height: 16),
+                                Expanded(
+                                  child: _PaymentManagementPanel(
+                                    key: ValueKey('payments-${studyRoom.id}'),
+                                    studyRoom: studyRoom,
+                                    service: widget.paymentService,
+                                  ),
+                                ),
+                                const SizedBox(height: 16),
+                                Expanded(
+                                  child: _AuditHistoryPanel(
+                                    key: ValueKey('history-${studyRoom.id}'),
+                                    studyRoom: studyRoom,
+                                    auditLogService: widget.auditLogService,
+                                    notificationLogService:
+                                        widget.notificationLogService,
+                                  ),
+                                ),
+                              ],
+                            ),
+                    ),
+                  ],
+                ),
+              ),
             ),
           ],
         );
@@ -278,6 +452,7 @@ class _TeacherHomeHeaderState extends State<_TeacherHomeHeader> {
             description: '화면 설계 모드 샘플',
           ),
         ],
+        selectedStudyRoomId: 'sample-room-1',
         designMode: true,
       );
     }
@@ -303,6 +478,7 @@ class _TeacherHomeHeaderState extends State<_TeacherHomeHeader> {
           teacherName: teacher.name,
           role: teacher.role,
           studyRooms: home.studyRooms,
+          selectedStudyRoomId: home.studyRooms.firstOrNull?.id,
           designMode: false,
         );
       },
@@ -424,13 +600,21 @@ class _StudyRoomSummaryBar extends StatelessWidget {
     required this.teacherName,
     required this.role,
     required this.studyRooms,
+    required this.selectedStudyRoomId,
     required this.designMode,
+    this.onSelected,
+    this.onCreate,
+    this.onEdit,
   });
 
   final String teacherName;
   final String role;
   final List<StudyRoomSummary> studyRooms;
+  final String? selectedStudyRoomId;
   final bool designMode;
+  final ValueChanged<String>? onSelected;
+  final VoidCallback? onCreate;
+  final VoidCallback? onEdit;
 
   @override
   Widget build(BuildContext context) {
@@ -471,9 +655,25 @@ class _StudyRoomSummaryBar extends StatelessWidget {
                 runSpacing: 8,
                 children: [
                   for (final studyRoom in studyRooms)
-                    Chip(
+                    ChoiceChip(
                       avatar: const Icon(Icons.meeting_room_outlined, size: 18),
                       label: Text(studyRoom.name),
+                      selected: studyRoom.id == selectedStudyRoomId,
+                      onSelected: onSelected == null
+                          ? null
+                          : (_) => onSelected!(studyRoom.id),
+                    ),
+                  if (onEdit != null)
+                    IconButton(
+                      tooltip: '공부방 수정',
+                      onPressed: onEdit,
+                      icon: const Icon(Icons.edit_outlined),
+                    ),
+                  if (onCreate != null)
+                    IconButton.filledTonal(
+                      tooltip: '공부방 추가',
+                      onPressed: onCreate,
+                      icon: const Icon(Icons.add_business_outlined),
                     ),
                 ],
               ),
@@ -481,6 +681,100 @@ class _StudyRoomSummaryBar extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+class _StudyRoomEditResult {
+  const _StudyRoomEditResult({required this.name, required this.description});
+
+  final String name;
+  final String description;
+}
+
+class _StudyRoomEditDialog extends StatefulWidget {
+  const _StudyRoomEditDialog({this.studyRoom});
+
+  final StudyRoomSummary? studyRoom;
+
+  @override
+  State<_StudyRoomEditDialog> createState() => _StudyRoomEditDialogState();
+}
+
+class _StudyRoomEditDialogState extends State<_StudyRoomEditDialog> {
+  late final TextEditingController _nameController;
+  late final TextEditingController _descriptionController;
+  String? _errorText;
+
+  @override
+  void initState() {
+    super.initState();
+    _nameController = TextEditingController(text: widget.studyRoom?.name ?? '');
+    _descriptionController = TextEditingController(
+      text: widget.studyRoom?.description ?? '',
+    );
+  }
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _descriptionController.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final name = _nameController.text.trim();
+    if (name.length < 2) {
+      setState(() => _errorText = '공부방 이름은 2자 이상 입력해 주세요.');
+      return;
+    }
+    Navigator.of(context).pop(
+      _StudyRoomEditResult(
+        name: name,
+        description: _descriptionController.text.trim(),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final editing = widget.studyRoom != null;
+    return AlertDialog(
+      title: Text(editing ? '공부방 수정' : '공부방 추가'),
+      content: SizedBox(
+        width: 360,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: _nameController,
+              decoration: InputDecoration(
+                labelText: '공부방 이름',
+                errorText: _errorText,
+                border: const OutlineInputBorder(),
+              ),
+              onSubmitted: (_) => _submit(),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: _descriptionController,
+              decoration: const InputDecoration(
+                labelText: '설명',
+                border: OutlineInputBorder(),
+              ),
+              minLines: 2,
+              maxLines: 3,
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('취소'),
+        ),
+        FilledButton(onPressed: _submit, child: Text(editing ? '저장' : '추가')),
+      ],
     );
   }
 }
@@ -544,7 +838,11 @@ class _ClassPanel extends StatelessWidget {
 }
 
 class _ClassManagementPanel extends StatefulWidget {
-  const _ClassManagementPanel({required this.studyRoom, required this.service});
+  const _ClassManagementPanel({
+    super.key,
+    required this.studyRoom,
+    required this.service,
+  });
 
   final StudyRoomSummary studyRoom;
   final ClassManagementService service;
@@ -1534,6 +1832,7 @@ class _EnrollmentPanel extends StatelessWidget {
 
 class _EnrollmentManagementPanel extends StatefulWidget {
   const _EnrollmentManagementPanel({
+    super.key,
     required this.studyRoom,
     required this.classService,
     required this.studentService,
@@ -2039,6 +2338,7 @@ class _AdminStudentListPanel extends StatelessWidget {
 
 class _StudentManagementPanel extends StatefulWidget {
   const _StudentManagementPanel({
+    super.key,
     required this.studyRoom,
     required this.service,
   });
@@ -3066,6 +3366,7 @@ class _TeacherAttendancePanelData {
 
 class _PaymentManagementPanel extends StatefulWidget {
   const _PaymentManagementPanel({
+    super.key,
     required this.studyRoom,
     required this.service,
   });
@@ -3442,6 +3743,7 @@ class _SampleAuditPanel extends StatelessWidget {
 
 class _AuditHistoryPanel extends StatelessWidget {
   const _AuditHistoryPanel({
+    super.key,
     required this.studyRoom,
     required this.auditLogService,
     required this.notificationLogService,

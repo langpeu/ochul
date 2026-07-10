@@ -85,6 +85,25 @@ async function routeEdgeRequest(
     return await onboardTeacher(body, context);
   }
 
+  if (path === "/study-rooms") {
+    if (method === "GET") {
+      return await listStudyRooms(context);
+    }
+    if (method === "POST") {
+      return await createStudyRoom(body, context);
+    }
+  }
+
+  const studyRoomMatch = path.match(/^\/study-rooms\/([^/]+)$/);
+  if (studyRoomMatch) {
+    if (method === "GET") {
+      return await getStudyRoom(studyRoomMatch[1], context);
+    }
+    if (method === "PATCH") {
+      return await updateStudyRoom(studyRoomMatch[1], body, context);
+    }
+  }
+
   if (method === "GET" && path === "/admin/teachers") {
     return await listAdminTeachers(context);
   }
@@ -441,6 +460,134 @@ async function onboardTeacher(
       description: studyRoom.description,
     }],
   };
+}
+
+async function listStudyRooms(
+  { db, teacher }: AppContext,
+): Promise<Record<string, unknown>> {
+  const activeTeacher = requireTeacherProfile(teacher);
+  const { data: studyRooms, error } = await db
+    .from("study_rooms")
+    .select("id, name, description, created_at")
+    .eq("owner_teacher_id", activeTeacher.id)
+    .order("created_at", { ascending: true });
+
+  if (error) throw new EdgeApiError(500, "공부방 목록 조회에 실패했습니다.");
+
+  return {
+    ok: true,
+    studyRooms: (studyRooms ?? []).map(formatStudyRoomSummary),
+  };
+}
+
+async function getStudyRoom(
+  studyRoomId: string,
+  { db, teacher }: AppContext,
+): Promise<Record<string, unknown>> {
+  const activeTeacher = requireTeacherProfile(teacher);
+  assertUuid(studyRoomId, "공부방 정보가 올바르지 않습니다.");
+  const studyRoom = await readAccessibleStudyRoom(
+    db,
+    studyRoomId,
+    activeTeacher,
+    { allowAdmin: true },
+  );
+  return { ok: true, studyRoom: formatStudyRoomSummary(studyRoom) };
+}
+
+async function createStudyRoom(
+  body: Record<string, unknown>,
+  { db, teacher }: AppContext,
+): Promise<Record<string, unknown>> {
+  const activeTeacher = requireTeacherProfile(teacher);
+  if (activeTeacher.role === "admin") {
+    throw new EdgeApiError(403, "관리자는 공부방을 생성할 수 없습니다.");
+  }
+
+  const name = stringValue(body.name);
+  const description = nullableString(body.description);
+  if (name.length < 2) {
+    throw new EdgeApiError(400, "공부방 이름은 2자 이상 입력해 주세요.");
+  }
+
+  const teacherProfile = await readTeacherProfileForWrite(db, activeTeacher.id);
+  const { data: studyRoom, error: studyRoomError } = await db
+    .from("study_rooms")
+    .insert({
+      organization_id: teacherProfile.organization_id,
+      name,
+      description,
+      owner_teacher_id: activeTeacher.id,
+    })
+    .select("id, name, description, created_at")
+    .single();
+
+  if (studyRoomError) {
+    throw new EdgeApiError(500, "공부방 생성에 실패했습니다.");
+  }
+
+  const { error: memberError } = await db.from("study_room_members").insert({
+    study_room_id: studyRoom.id,
+    teacher_id: activeTeacher.id,
+    role: "owner",
+  });
+
+  if (memberError) {
+    throw new EdgeApiError(500, "공부방 권한 생성에 실패했습니다.");
+  }
+
+  await createStudyRoomAuditLog(db, {
+    organizationId: teacherProfile.organization_id,
+    studyRoomId: studyRoom.id,
+    actorTeacherId: activeTeacher.id,
+    action: "created",
+    title: "공부방 등록",
+    summary: `${studyRoom.name} 공부방을 등록했습니다.`,
+  });
+
+  return { ok: true, studyRoom: formatStudyRoomSummary(studyRoom) };
+}
+
+async function updateStudyRoom(
+  studyRoomId: string,
+  body: Record<string, unknown>,
+  { db, teacher }: AppContext,
+): Promise<Record<string, unknown>> {
+  const activeTeacher = requireTeacherProfile(teacher);
+  assertUuid(studyRoomId, "공부방 정보가 올바르지 않습니다.");
+  const current = await readAccessibleStudyRoom(
+    db,
+    studyRoomId,
+    activeTeacher,
+    { allowAdmin: false },
+  );
+
+  const name = stringValue(body.name);
+  const description = nullableString(body.description);
+  if (name.length < 2) {
+    throw new EdgeApiError(400, "공부방 이름은 2자 이상 입력해 주세요.");
+  }
+
+  const { data: studyRoom, error } = await db
+    .from("study_rooms")
+    .update({ name, description })
+    .eq("id", studyRoomId)
+    .eq("owner_teacher_id", activeTeacher.id)
+    .select("id, name, description, created_at")
+    .single();
+
+  if (error) throw new EdgeApiError(500, "공부방 수정에 실패했습니다.");
+
+  await createStudyRoomAuditLog(db, {
+    organizationId: current.organization_id,
+    studyRoomId,
+    actorTeacherId: activeTeacher.id,
+    action: "updated",
+    title: "공부방 수정",
+    summary: `${studyRoom.name} 공부방 정보를 수정했습니다.`,
+  });
+
+  return { ok: true, studyRoom: formatStudyRoomSummary(studyRoom) };
 }
 
 async function listAdminTeachers(
@@ -2467,6 +2614,26 @@ async function assertStudyRoomAccess(
   if (!data) throw new EdgeApiError(403, "해당 공부방에 접근할 수 없습니다.");
 }
 
+async function readAccessibleStudyRoom(
+  db: SupabaseClient,
+  studyRoomId: string,
+  teacher: TeacherContext,
+  options: { allowAdmin: boolean },
+) {
+  const { data, error } = await db
+    .from("study_rooms")
+    .select(
+      "id, organization_id, name, description, created_at, owner_teacher_id",
+    )
+    .eq("id", studyRoomId)
+    .maybeSingle();
+
+  if (error) throw new EdgeApiError(500, "공부방 조회에 실패했습니다.");
+  if (!data) throw new EdgeApiError(404, "공부방을 찾을 수 없습니다.");
+  await assertStudyRoomAccess(db, teacher, studyRoomId, options);
+  return data;
+}
+
 async function readAccessibleClass(
   db: SupabaseClient,
   classId: string,
@@ -3109,6 +3276,31 @@ async function createClassAuditLog(
   if (error) throw new EdgeApiError(500, "사용 히스토리 기록에 실패했습니다.");
 }
 
+async function createStudyRoomAuditLog(
+  db: SupabaseClient,
+  input: {
+    organizationId: string;
+    studyRoomId: string;
+    actorTeacherId: string;
+    action: "created" | "updated" | "deleted";
+    title: string;
+    summary: string;
+  },
+) {
+  const { error } = await db.from("audit_logs").insert({
+    organization_id: input.organizationId,
+    study_room_id: input.studyRoomId,
+    actor_teacher_id: input.actorTeacherId,
+    entity_type: "study_room",
+    entity_id: input.studyRoomId,
+    action: input.action,
+    title: input.title,
+    summary: input.summary,
+  });
+
+  if (error) throw new EdgeApiError(500, "사용 히스토리 기록에 실패했습니다.");
+}
+
 async function createClassStudentAuditLog(
   db: SupabaseClient,
   input: {
@@ -3216,6 +3408,20 @@ async function readTeacherByAuthUser(
   }
   if (!teacher) return null;
   return { id: teacher.id, role: teacher.role };
+}
+
+async function readTeacherProfileForWrite(
+  db: SupabaseClient,
+  teacherId: string,
+) {
+  const { data: teacher, error } = await db
+    .from("teachers")
+    .select("id, organization_id, role")
+    .eq("id", teacherId)
+    .single();
+
+  if (error) throw new EdgeApiError(500, "선생님 프로필 조회에 실패했습니다.");
+  return teacher;
 }
 
 function createServiceClient() {
@@ -3421,6 +3627,15 @@ function formatClassSummary(classRoom: Record<string, unknown>) {
       startsAt: trimSeconds((schedule as Record<string, unknown>).starts_at),
       endsAt: trimSeconds((schedule as Record<string, unknown>).ends_at),
     })),
+  };
+}
+
+function formatStudyRoomSummary(studyRoom: Record<string, unknown>) {
+  return {
+    id: studyRoom.id,
+    name: studyRoom.name,
+    description: studyRoom.description,
+    createdAt: studyRoom.created_at,
   };
 }
 

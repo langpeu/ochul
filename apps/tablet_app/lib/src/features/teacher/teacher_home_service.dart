@@ -24,6 +24,49 @@ class TeacherHomeService {
     );
     return TeacherHome.fromJson(data);
   }
+
+  Future<List<StudyRoomSummary>> fetchStudyRooms() async {
+    final data = await edgeClient.call('/study-rooms');
+    final studyRoomsJson = data['studyRooms'];
+    return [
+      if (studyRoomsJson is List)
+        for (final item in studyRoomsJson)
+          if (item is Map<String, dynamic>) StudyRoomSummary.fromJson(item),
+    ];
+  }
+
+  Future<StudyRoomSummary> createStudyRoom({
+    required String name,
+    required String description,
+  }) async {
+    final data = await edgeClient.call(
+      '/study-rooms',
+      method: EdgeHttpMethod.post,
+      body: <String, dynamic>{'name': name, 'description': description},
+    );
+    final studyRoomJson = data['studyRoom'];
+    if (studyRoomJson is Map<String, dynamic>) {
+      return StudyRoomSummary.fromJson(studyRoomJson);
+    }
+    throw const TeacherHomeException('공부방 생성 응답이 올바르지 않습니다.');
+  }
+
+  Future<StudyRoomSummary> updateStudyRoom({
+    required String studyRoomId,
+    required String name,
+    required String description,
+  }) async {
+    final data = await edgeClient.call(
+      '/study-rooms/$studyRoomId',
+      method: EdgeHttpMethod.patch,
+      body: <String, dynamic>{'name': name, 'description': description},
+    );
+    final studyRoomJson = data['studyRoom'];
+    if (studyRoomJson is Map<String, dynamic>) {
+      return StudyRoomSummary.fromJson(studyRoomJson);
+    }
+    throw const TeacherHomeException('공부방 수정 응답이 올바르지 않습니다.');
+  }
 }
 
 class TeacherHome {
@@ -95,4 +138,13 @@ class StudyRoomSummary {
   final String id;
   final String name;
   final String? description;
+}
+
+class TeacherHomeException implements Exception {
+  const TeacherHomeException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
 }
