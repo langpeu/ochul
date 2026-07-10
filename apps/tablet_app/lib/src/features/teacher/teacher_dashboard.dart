@@ -4459,11 +4459,13 @@ class _NotificationLogTabState extends State<_NotificationLogTab> {
                         _notificationEventLabel(log.eventType),
                         _notificationStatusLabel(log.status),
                         log.recipientPhoneMasked,
+                        if (log.templateCode.isNotEmpty) log.templateCode,
                         _formatAuditTime(log.sentAt ?? log.createdAt),
                         if (log.retryCount > 0) '재시도 ${log.retryCount}회',
                         if (log.errorMessage != null &&
                             log.errorMessage!.isNotEmpty)
                           log.errorMessage!,
+                        if (log.messagePreview.isNotEmpty) log.messagePreview,
                       ].join(' · '),
                     ),
                     trailing: resending

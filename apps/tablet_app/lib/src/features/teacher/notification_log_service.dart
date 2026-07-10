@@ -53,6 +53,8 @@ class KakaoNotificationLog {
     required this.status,
     required this.errorMessage,
     required this.retryCount,
+    required this.templateCode,
+    required this.messagePreview,
     required this.createdAt,
     required this.sentAt,
   });
@@ -67,6 +69,8 @@ class KakaoNotificationLog {
       status: json['status'] as String? ?? 'pending',
       errorMessage: json['errorMessage'] as String?,
       retryCount: json['retryCount'] as int? ?? 0,
+      templateCode: json['templateCode'] as String? ?? '',
+      messagePreview: json['messagePreview'] as String? ?? '',
       createdAt: DateTime.tryParse(json['createdAt'] as String? ?? ''),
       sentAt: DateTime.tryParse(json['sentAt'] as String? ?? ''),
     );
@@ -80,6 +84,8 @@ class KakaoNotificationLog {
   final String status;
   final String? errorMessage;
   final int retryCount;
+  final String templateCode;
+  final String messagePreview;
   final DateTime? createdAt;
   final DateTime? sentAt;
 }

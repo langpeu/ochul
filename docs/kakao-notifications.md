@@ -46,8 +46,27 @@
 - `KAKAO_PROVIDER_ENDPOINT`
 - `KAKAO_PROVIDER_API_KEY`
 - `KAKAO_SENDER_KEY`
+- `KAKAO_TEMPLATE_ATTENDANCE_CHECKED_IN`
+- `KAKAO_TEMPLATE_PAYMENT_DUE_REMINDER`
+- `KAKAO_TEMPLATE_CLASS_CANCELLED`
+- `KAKAO_TEMPLATE_CLASS_MAKEUP_ADDED`
+- `KAKAO_TEMPLATE_DEFAULT`
 
 `notification_logs`에는 `recipient_phone_masked`만 저장한다. 실제 발송 시 원문 전화번호는 `guardian_id`로 `guardians.phone`을 조회해 provider 호출에만 사용하고 로그 payload에는 저장하지 않는다.
+
+## Provider 요청 형식
+
+`POST /notifications/process-pending`은 provider endpoint로 다음 JSON을 전송한다.
+
+- `senderKey`
+- `recipientPhone`
+- `eventType`
+- `templateCode`
+- `templateParams`
+- `messageText`
+- `payload`
+
+Provider별 필드명이 다르면 `sendKakaoProviderMessage` adapter에서만 매핑한다. Flutter 앱에는 provider key와 템플릿 코드를 넣지 않는다.
 
 ## 출석 알림 예시 필드
 

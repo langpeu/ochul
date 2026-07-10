@@ -1863,7 +1863,7 @@ async function listNotifications(
   let query = db
     .from("notification_logs")
     .select(
-      "id, event_type, channel, recipient_phone_masked, student_id, student_name, class_name, status, error_message, retry_count, retry_of_notification_id, created_at, sent_at",
+      "id, event_type, channel, recipient_phone_masked, student_id, student_name, class_name, payload, status, error_message, retry_count, retry_of_notification_id, created_at, sent_at",
     )
     .eq("study_room_id", studyRoomId)
     .eq("channel", "kakao")
@@ -3256,12 +3256,12 @@ async function createAttendanceNotificationLogs(
       student_name: input.studentName,
       class_name: input.className,
       event_time: input.checkedInAt,
-      payload: {
+      payload: buildKakaoTemplatePayload("attendance_checked_in", {
         studentName: input.studentName,
         className: input.className,
         attendanceStatus: "present",
         checkedInAt: input.checkedInAt,
-      },
+      }),
       status: "pending",
     }));
 
@@ -3319,14 +3319,14 @@ async function createPaymentReminderNotificationLogs(
       student_name: input.studentName,
       class_name: input.periodName,
       event_time: new Date().toISOString(),
-      payload: {
+      payload: buildKakaoTemplatePayload("payment_due_reminder", {
         studentName: input.studentName,
         paymentPeriodName: input.periodName,
         dueDate: input.dueDate,
         amount: input.amount,
         paymentPeriodId: input.paymentPeriodId,
         paymentStatusId: input.paymentStatusId,
-      },
+      }),
       status: "pending",
     }));
 
@@ -3402,7 +3402,7 @@ async function createClassChangeNotificationLogs(
           student_name: student.name,
           class_name: input.className,
           event_time: new Date().toISOString(),
-          payload: {
+          payload: buildKakaoTemplatePayload(input.eventType, {
             title: input.messageTitle,
             studentName: student.name,
             className: input.className,
@@ -3410,7 +3410,7 @@ async function createClassChangeNotificationLogs(
             startsAt: input.startsAt,
             endsAt: input.endsAt,
             reason: input.reason,
-          },
+          }),
           status: "pending",
         });
       }
@@ -4201,6 +4201,7 @@ function formatStudentGuardian(row: Record<string, unknown>) {
 }
 
 function formatNotificationLog(row: Record<string, unknown>) {
+  const payload = normalizeProviderPayload(row.payload);
   return {
     id: row.id,
     eventType: row.event_type,
@@ -4213,6 +4214,8 @@ function formatNotificationLog(row: Record<string, unknown>) {
     errorMessage: row.error_message,
     retryCount: row.retry_count,
     retryOfNotificationId: row.retry_of_notification_id,
+    templateCode: stringValue(payload.templateCode),
+    messagePreview: stringValue(payload.messageText),
     createdAt: row.created_at,
     sentAt: row.sent_at,
   };
@@ -4244,6 +4247,52 @@ function formatScheduleText(
 function trimSeconds(value: unknown) {
   const text = stringValue(value);
   return text.length >= 5 ? text.slice(0, 5) : text;
+}
+
+function normalizeStringRecord(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  const normalized: Record<string, string> = {};
+  for (const [key, rawValue] of Object.entries(value)) {
+    const text = stringValue(rawValue);
+    if (text.length > 0) normalized[key] = text;
+  }
+  return normalized;
+}
+
+function formatKakaoDateTime(value: unknown) {
+  const text = stringValue(value);
+  if (!text) return "";
+  const date = new Date(text);
+  if (Number.isNaN(date.getTime())) return text;
+  return new Intl.DateTimeFormat("ko-KR", {
+    timeZone: "Asia/Seoul",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(date);
+}
+
+function formatKakaoTime(value: unknown) {
+  const text = trimSeconds(value);
+  if (!text) return "";
+  const date = new Date(text);
+  if (Number.isNaN(date.getTime())) return text;
+  return new Intl.DateTimeFormat("ko-KR", {
+    timeZone: "Asia/Seoul",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(date);
+}
+
+function formatWon(value: unknown) {
+  const amount = Number(value ?? 0);
+  if (!Number.isFinite(amount)) return "";
+  return `${Math.trunc(amount).toLocaleString("ko-KR")}원`;
 }
 
 function todayDateString() {
@@ -4323,6 +4372,104 @@ function normalizeProviderPayload(value: unknown) {
   return value as Record<string, unknown>;
 }
 
+function buildKakaoTemplatePayload(
+  eventType: string,
+  params: Record<string, unknown>,
+) {
+  const templateCode = kakaoTemplateCode(eventType);
+  const templateParams = normalizeKakaoTemplateParams(eventType, params);
+  return {
+    templateCode,
+    templateParams,
+    messageText: buildKakaoMessageText(eventType, templateParams),
+  };
+}
+
+function kakaoTemplateCode(eventType: string) {
+  switch (eventType) {
+    case "attendance_checked_in":
+      return Deno.env.get("KAKAO_TEMPLATE_ATTENDANCE_CHECKED_IN") ??
+        "ATTENDANCE_CHECKED_IN";
+    case "payment_due_reminder":
+      return Deno.env.get("KAKAO_TEMPLATE_PAYMENT_DUE_REMINDER") ??
+        "PAYMENT_DUE_REMINDER";
+    case "class_cancelled":
+      return Deno.env.get("KAKAO_TEMPLATE_CLASS_CANCELLED") ??
+        "CLASS_CANCELLED";
+    case "class_makeup_added":
+      return Deno.env.get("KAKAO_TEMPLATE_CLASS_MAKEUP_ADDED") ??
+        "CLASS_MAKEUP_ADDED";
+    default:
+      return Deno.env.get("KAKAO_TEMPLATE_DEFAULT") ?? "DEFAULT_NOTICE";
+  }
+}
+
+function normalizeKakaoTemplateParams(
+  eventType: string,
+  params: Record<string, unknown>,
+) {
+  const normalized: Record<string, string> = {};
+  const put = (key: string, value: unknown) => {
+    const text = stringValue(value);
+    if (text.length > 0) normalized[key] = text;
+  };
+
+  put("studentName", params.studentName);
+  put("className", params.className);
+
+  if (eventType === "attendance_checked_in") {
+    put("attendanceStatus", params.attendanceStatus ?? "present");
+    put("checkedInAt", formatKakaoDateTime(params.checkedInAt));
+  } else if (eventType === "payment_due_reminder") {
+    put("paymentPeriodName", params.paymentPeriodName);
+    put("dueDate", params.dueDate);
+    put("amount", formatWon(params.amount));
+  } else if (
+    eventType === "class_cancelled" ||
+    eventType === "class_makeup_added"
+  ) {
+    put("title", params.title);
+    put("sessionDate", params.sessionDate);
+    put("startsAt", formatKakaoTime(params.startsAt));
+    put("endsAt", formatKakaoTime(params.endsAt));
+    put("reason", params.reason ?? "사유 미입력");
+  }
+
+  return normalized;
+}
+
+function buildKakaoMessageText(
+  eventType: string,
+  params: Record<string, string>,
+) {
+  switch (eventType) {
+    case "attendance_checked_in":
+      return `${params.studentName ?? "학생"} 학생이 ${
+        params.className ?? "수업"
+      }에 출석했습니다. 출석시간: ${params.checkedInAt ?? ""}`;
+    case "payment_due_reminder":
+      return `${params.studentName ?? "학생"} 학생의 ${
+        params.paymentPeriodName ?? "수업료"
+      } 납부 마감일은 ${params.dueDate ?? ""}입니다. 금액: ${
+        params.amount ?? ""
+      }`;
+    case "class_cancelled":
+      return `${params.studentName ?? "학생"} 학생의 ${
+        params.className ?? "수업"
+      } 휴강 안내입니다. 일정: ${params.sessionDate ?? ""} ${
+        params.startsAt ?? ""
+      }-${params.endsAt ?? ""}, 사유: ${params.reason ?? ""}`;
+    case "class_makeup_added":
+      return `${params.studentName ?? "학생"} 학생의 ${
+        params.className ?? "수업"
+      } 보강 안내입니다. 일정: ${params.sessionDate ?? ""} ${
+        params.startsAt ?? ""
+      }-${params.endsAt ?? ""}, 사유: ${params.reason ?? ""}`;
+    default:
+      return `${params.studentName ?? "학생"} · ${params.className ?? "알림"}`;
+  }
+}
+
 async function sendKakaoProviderMessage(input: {
   recipientPhone: string;
   eventType: string;
@@ -4348,6 +4495,9 @@ async function sendKakaoProviderMessage(input: {
       senderKey,
       recipientPhone: input.recipientPhone,
       eventType: input.eventType,
+      templateCode: stringValue(input.payload.templateCode),
+      templateParams: normalizeStringRecord(input.payload.templateParams),
+      messageText: stringValue(input.payload.messageText),
       payload: input.payload,
     }),
   });
