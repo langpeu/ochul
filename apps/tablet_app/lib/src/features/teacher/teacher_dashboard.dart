@@ -3269,6 +3269,7 @@ class _NotificationLogTabState extends State<_NotificationLogTab> {
   var _status = 'all';
   late Future<List<KakaoNotificationLog>> _logsFuture;
   String? _resendingId;
+  var _processingPending = false;
 
   @override
   void initState() {
@@ -3311,6 +3312,31 @@ class _NotificationLogTabState extends State<_NotificationLogTab> {
     }
   }
 
+  Future<void> _processPending() async {
+    setState(() => _processingPending = true);
+    try {
+      final result = await widget.service.processPending(widget.studyRoom.id);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '대기 ${result.processed}건 처리: 성공 ${result.sent}건, 실패 ${result.failed}건',
+            ),
+          ),
+        );
+        setState(() => _logsFuture = _fetchLogs());
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('대기 발송 처리에 실패했습니다.')));
+      }
+    } finally {
+      if (mounted) setState(() => _processingPending = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     const statuses = [
@@ -3324,6 +3350,7 @@ class _NotificationLogTabState extends State<_NotificationLogTab> {
       children: [
         Wrap(
           spacing: 8,
+          crossAxisAlignment: WrapCrossAlignment.center,
           children: [
             for (final item in statuses)
               FilterChip(
@@ -3331,6 +3358,17 @@ class _NotificationLogTabState extends State<_NotificationLogTab> {
                 selected: _status == item.$1,
                 onSelected: (_) => _setStatus(item.$1),
               ),
+            IconButton.filledTonal(
+              tooltip: '대기 발송 처리',
+              onPressed: _processingPending ? null : _processPending,
+              icon: _processingPending
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.send_outlined),
+            ),
           ],
         ),
         const SizedBox(height: 8),

@@ -32,6 +32,15 @@ class NotificationLogService {
     }
     throw const NotificationLogException('카카오 재발송 응답이 올바르지 않습니다.');
   }
+
+  Future<NotificationProcessResult> processPending(String studyRoomId) async {
+    final data = await edgeClient.call(
+      '/notifications/process-pending',
+      method: EdgeHttpMethod.post,
+      body: <String, dynamic>{'studyRoomId': studyRoomId, 'limit': 20},
+    );
+    return NotificationProcessResult.fromJson(data);
+  }
 }
 
 class KakaoNotificationLog {
@@ -82,4 +91,24 @@ class NotificationLogException implements Exception {
 
   @override
   String toString() => message;
+}
+
+class NotificationProcessResult {
+  const NotificationProcessResult({
+    required this.processed,
+    required this.sent,
+    required this.failed,
+  });
+
+  factory NotificationProcessResult.fromJson(Map<String, dynamic> json) {
+    return NotificationProcessResult(
+      processed: json['processed'] as int? ?? 0,
+      sent: json['sent'] as int? ?? 0,
+      failed: json['failed'] as int? ?? 0,
+    );
+  }
+
+  final int processed;
+  final int sent;
+  final int failed;
 }

@@ -187,6 +187,10 @@ async function routeEdgeRequest(
     return await resendNotification(resendNotificationMatch[1], context);
   }
 
+  if (method === "POST" && path === "/notifications/process-pending") {
+    return await processPendingNotifications(body, context);
+  }
+
   const paymentPeriodsMatch = path.match(
     /^\/study-rooms\/([^/]+)\/payment-periods$/,
   );
@@ -1406,6 +1410,107 @@ async function resendNotification(
   return {
     ok: true,
     notification: formatNotificationLog(retry),
+  };
+}
+
+async function processPendingNotifications(
+  body: Record<string, unknown>,
+  { db, teacher }: AppContext,
+): Promise<Record<string, unknown>> {
+  const activeTeacher = requireTeacherProfile(teacher);
+  const studyRoomId = stringValue(body.studyRoomId);
+  assertUuid(studyRoomId, "공부방 정보가 올바르지 않습니다.");
+  await assertStudyRoomAccess(db, activeTeacher, studyRoomId, {
+    allowAdmin: false,
+  });
+  const limit = normalizeLimit(body.limit, 20, 50);
+
+  const { data: notifications, error } = await db
+    .from("notification_logs")
+    .select(
+      "id, organization_id, study_room_id, guardian_id, event_type, payload, recipient_phone_masked, student_name, class_name, retry_count, guardians!inner(phone, kakao_opt_in, opt_out_at, deleted_at)",
+    )
+    .eq("study_room_id", studyRoomId)
+    .eq("channel", "kakao")
+    .eq("status", "pending")
+    .order("created_at", { ascending: true })
+    .limit(limit);
+
+  if (error) {
+    throw new EdgeApiError(500, "대기 카카오 알림 조회에 실패했습니다.");
+  }
+
+  let sent = 0;
+  let failed = 0;
+  for (const notification of notifications ?? []) {
+    const guardian = normalizeJoinedObject(notification.guardians);
+    try {
+      if (
+        guardian.kakao_opt_in !== true ||
+        guardian.opt_out_at !== null ||
+        guardian.deleted_at !== null
+      ) {
+        throw new EdgeApiError(400, "보호자가 카카오 수신 대상이 아닙니다.");
+      }
+      const providerResult = await sendKakaoProviderMessage({
+        recipientPhone: stringValue(guardian.phone),
+        eventType: String(notification.event_type),
+        payload: normalizeProviderPayload(notification.payload),
+      });
+      const { error: updateError } = await db
+        .from("notification_logs")
+        .update({
+          status: "sent",
+          sent_at: new Date().toISOString(),
+          provider_message_id: providerResult.messageId,
+          provider_response: providerResult.response,
+          error_message: null,
+        })
+        .eq("id", notification.id);
+      if (updateError) {
+        throw new EdgeApiError(500, "카카오 발송 성공 기록에 실패했습니다.");
+      }
+      sent += 1;
+    } catch (error) {
+      const message = error instanceof Error
+        ? error.message
+        : "카카오 발송에 실패했습니다.";
+      const { error: updateError } = await db
+        .from("notification_logs")
+        .update({
+          status: "failed",
+          error_message: message,
+          provider_response: { error: message },
+        })
+        .eq("id", notification.id);
+      if (updateError) {
+        throw new EdgeApiError(500, "카카오 발송 실패 기록에 실패했습니다.");
+      }
+      failed += 1;
+    }
+  }
+
+  const firstNotification = notifications?.[0];
+  if (firstNotification) {
+    await createNotificationAuditLog(db, {
+      organizationId: firstNotification.organization_id,
+      studyRoomId,
+      actorTeacherId: activeTeacher.id,
+      studentId: null,
+      notificationLogId: firstNotification.id,
+      action: failed > 0 ? "message_failed" : "message_sent",
+      title: "카카오 대기 알림 처리",
+      summary: `카카오 대기 알림 ${sent}건 성공, ${failed}건 실패`,
+    }).catch((error) => {
+      console.error("notification audit log failed", error);
+    });
+  }
+
+  return {
+    ok: true,
+    processed: (notifications ?? []).length,
+    sent,
+    failed,
   };
 }
 
@@ -3312,6 +3417,56 @@ function formatNotificationSummary(log: Record<string, unknown>) {
   const className = stringValue(log.class_name) || "수업";
   const recipient = stringValue(log.recipient_phone_masked) || "보호자";
   return `${studentName} · ${className} · ${recipient}`;
+}
+
+function normalizeProviderPayload(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  return value as Record<string, unknown>;
+}
+
+async function sendKakaoProviderMessage(input: {
+  recipientPhone: string;
+  eventType: string;
+  payload: Record<string, unknown>;
+}) {
+  const endpoint = Deno.env.get("KAKAO_PROVIDER_ENDPOINT");
+  const apiKey = Deno.env.get("KAKAO_PROVIDER_API_KEY");
+  const senderKey = Deno.env.get("KAKAO_SENDER_KEY");
+  if (!endpoint || !apiKey || !senderKey) {
+    throw new EdgeApiError(
+      500,
+      "카카오 발송 서버 환경변수가 설정되지 않았습니다.",
+    );
+  }
+
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      senderKey,
+      recipientPhone: input.recipientPhone,
+      eventType: input.eventType,
+      payload: input.payload,
+    }),
+  });
+  const responseBody = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new EdgeApiError(
+      response.status,
+      `카카오 provider 발송 실패: ${response.status}`,
+    );
+  }
+
+  const body = responseBody as Record<string, unknown>;
+  return {
+    messageId: typeof body.messageId === "string" ? body.messageId : null,
+    response: body,
+  };
 }
 
 function switchNotificationStatus(status: unknown) {

@@ -32,9 +32,22 @@
 
 1. 출석 기록 생성 또는 상태 변경
 2. 수업 일정 변경, 납부 마감 안내 등 발송 이벤트 생성
-3. Edge Function이 Kakao provider API 호출
-4. 결과를 `notification_logs`에 저장
-5. 실패 건은 관리자 화면에서 재발송 가능
+3. `notification_logs`에 `pending` 로그 생성
+4. `POST /notifications/process-pending`이 Kakao provider API 호출
+5. 결과를 `notification_logs`의 `sent` 또는 `failed` 상태로 저장
+6. 실패 건은 선생님 보드의 카카오 탭에서 재발송 요청 가능
+
+## Edge Function 환경변수
+
+서버 비밀값은 Supabase Edge Function secret으로만 설정한다. Flutter 앱이나 공개 repo에는 넣지 않는다.
+
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `KAKAO_PROVIDER_ENDPOINT`
+- `KAKAO_PROVIDER_API_KEY`
+- `KAKAO_SENDER_KEY`
+
+`notification_logs`에는 `recipient_phone_masked`만 저장한다. 실제 발송 시 원문 전화번호는 `guardian_id`로 `guardians.phone`을 조회해 provider 호출에만 사용하고 로그 payload에는 저장하지 않는다.
 
 ## 출석 알림 예시 필드
 
