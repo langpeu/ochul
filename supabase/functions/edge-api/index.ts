@@ -2023,7 +2023,9 @@ async function listSessionStudents(
 ) {
   const { data: enrollments, error: enrollmentError } = await db
     .from("class_students")
-    .select("student_id, display_order, students!inner(id, student_code, name)")
+    .select(
+      "student_id, display_order, students!inner(id, student_code, name, avatar_key)",
+    )
     .eq("class_id", classId)
     .eq("active", true)
     .order("display_order", { ascending: true });
@@ -2051,6 +2053,7 @@ async function listSessionStudents(
       id: student.id,
       code: student.student_code,
       name: student.name,
+      avatarKey: student.avatar_key,
       recordId: record?.id ?? null,
       status: record?.status ?? "waiting",
       checkedInAt: record?.checked_in_at ?? null,
@@ -3632,7 +3635,9 @@ async function formatClassroomLayout(
 
   const { data: assignments, error: assignmentsError } = await db
     .from("student_seat_assignments")
-    .select("classroom_seat_id, student_id, students!inner(name, student_code)")
+    .select(
+      "classroom_seat_id, student_id, students!inner(name, student_code, avatar_key)",
+    )
     .eq("classroom_layout_id", layout.id)
     .eq("active", true);
   if (assignmentsError) {
@@ -3680,7 +3685,7 @@ async function readAttendanceClassroomLayout(
   const { data: occupiedSeats, error: occupiedSeatsError } = await db
     .from("attendance_records")
     .select(
-      "classroom_seat_id, student_id, status, checked_in_at, students!inner(name, student_code)",
+      "classroom_seat_id, student_id, status, checked_in_at, students!inner(name, student_code, avatar_key)",
     )
     .eq("class_session_id", classSessionId)
     .not("classroom_seat_id", "is", null);
@@ -5160,6 +5165,7 @@ function formatSeatAssignment(row: Record<string, unknown>) {
     studentId: row.student_id,
     studentName: student.name,
     studentCode: student.student_code,
+    avatarKey: student.avatar_key,
   };
 }
 
@@ -5170,6 +5176,7 @@ function formatSeatOccupancy(row: Record<string, unknown>) {
     studentId: row.student_id,
     studentName: student.name,
     studentCode: student.student_code,
+    avatarKey: student.avatar_key,
     status: row.status,
     checkedInAt: row.checked_in_at,
   };

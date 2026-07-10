@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../../core/app_config.dart';
 import '../../core/edge_function_client.dart';
 import '../../models/sample_data.dart';
+import '../../widgets/student_avatar.dart';
 import 'attendance_service.dart';
 
 class StudentAttendanceScreen extends StatefulWidget {
@@ -396,9 +397,10 @@ class _StudentDragChip extends StatelessWidget {
         ),
         child: Row(
           children: [
-            CircleAvatar(
+            StudentAvatar(
+              name: student.name,
+              avatarKey: student.avatarKey,
               radius: 18,
-              child: Text(student.name.characters.first),
             ),
             const SizedBox(width: 10),
             Expanded(
@@ -502,11 +504,33 @@ class _PositionedAttendanceSeat extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                     style: Theme.of(context).textTheme.labelLarge,
                   ),
-                  Text(
-                    occupancy?.studentName ?? assignedStudent?.name ?? '빈 좌석',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.titleSmall,
+                  Row(
+                    children: [
+                      if (occupancy != null || assignedStudent != null) ...[
+                        StudentAvatar(
+                          name:
+                              occupancy?.studentName ??
+                              assignedStudent?.name ??
+                              '',
+                          avatarKey:
+                              occupancy?.avatarKey ??
+                              assignedStudent?.avatarKey ??
+                              '',
+                          radius: 14,
+                        ),
+                        const SizedBox(width: 6),
+                      ],
+                      Expanded(
+                        child: Text(
+                          occupancy?.studentName ??
+                              assignedStudent?.name ??
+                              '빈 좌석',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.titleSmall,
+                        ),
+                      ),
+                    ],
                   ),
                   Text(
                     isOccupied

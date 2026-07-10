@@ -5,6 +5,7 @@ import '../../core/edge_function_client.dart';
 import '../../core/teacher_gate.dart';
 import '../../core/teacher_pin_store.dart';
 import '../../models/sample_data.dart';
+import '../../widgets/student_avatar.dart';
 import 'admin_management_service.dart';
 import 'audit_log_service.dart';
 import 'attendance_management_service.dart';
@@ -3586,7 +3587,11 @@ class _StudentManagementPanelState extends State<_StudentManagementPanel> {
                       final processing = _processingStudentId == student.id;
                       return ListTile(
                         contentPadding: EdgeInsets.zero,
-                        leading: const Icon(Icons.person_outline),
+                        leading: StudentAvatar(
+                          name: student.name,
+                          avatarKey: student.avatarKey,
+                          radius: 20,
+                        ),
                         title: Text(student.name),
                         subtitle: Text(
                           '${student.code} · ${_studentStatusLabel(student.status)} · ${_studentAgeGroupLabel(student.ageGroup)} · ${_studentGenderLabel(student.gender)}',

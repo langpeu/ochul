@@ -96,6 +96,7 @@ class AttendanceStudent {
     required this.code,
     required this.name,
     required this.status,
+    required this.avatarKey,
   });
 
   factory AttendanceStudent.fromJson(Map<String, dynamic> json) {
@@ -104,6 +105,7 @@ class AttendanceStudent {
       code: json['code'] as String? ?? '',
       name: json['name'] as String? ?? '학생',
       status: json['status'] as String? ?? 'waiting',
+      avatarKey: json['avatarKey'] as String? ?? 'elementary_unspecified_01',
     );
   }
 
@@ -111,6 +113,7 @@ class AttendanceStudent {
   final String code;
   final String name;
   final String status;
+  final String avatarKey;
 }
 
 class AttendanceClassroomLayout {
@@ -214,6 +217,7 @@ class AttendanceSeatAssignment {
     required this.studentId,
     required this.studentName,
     required this.studentCode,
+    required this.avatarKey,
   });
 
   factory AttendanceSeatAssignment.fromJson(Map<String, dynamic> json) {
@@ -222,6 +226,7 @@ class AttendanceSeatAssignment {
       studentId: json['studentId'] as String? ?? '',
       studentName: json['studentName'] as String? ?? '학생',
       studentCode: json['studentCode'] as String? ?? '',
+      avatarKey: json['avatarKey'] as String? ?? 'elementary_unspecified_01',
     );
   }
 
@@ -229,6 +234,7 @@ class AttendanceSeatAssignment {
   final String studentId;
   final String studentName;
   final String studentCode;
+  final String avatarKey;
 }
 
 class AttendanceSeatOccupancy {
@@ -237,6 +243,7 @@ class AttendanceSeatOccupancy {
     required this.studentId,
     required this.studentName,
     required this.studentCode,
+    required this.avatarKey,
     required this.status,
   });
 
@@ -246,6 +253,7 @@ class AttendanceSeatOccupancy {
       studentId: json['studentId'] as String? ?? '',
       studentName: json['studentName'] as String? ?? '학생',
       studentCode: json['studentCode'] as String? ?? '',
+      avatarKey: json['avatarKey'] as String? ?? 'elementary_unspecified_01',
       status: json['status'] as String? ?? 'present',
     );
   }
@@ -254,6 +262,7 @@ class AttendanceSeatOccupancy {
   final String studentId;
   final String studentName;
   final String studentCode;
+  final String avatarKey;
   final String status;
 }
 
